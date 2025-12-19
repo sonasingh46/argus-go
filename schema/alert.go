@@ -2,6 +2,13 @@ package schema
 
 import "time"
 
+type AlertType string
+
+const (
+	AlertTypeParent  AlertType = "parent"
+	AlertTypeGrouped AlertType = "grouped"
+)
+
 // ESQueryAlertRule represents the document structure for the "esquery_alert" index.
 type ESQueryAlertRule struct {
 	ID         string `json:"id"`
@@ -21,12 +28,14 @@ type AlertMetadata struct {
 }
 
 type Alert struct {
-	Summary   string        `json:"summary"`
-	Severity  string        `json:"severity"`
-	Status    string        `json:"status"`
-	Timestamp time.Time     `json:"timestamp"`
-	Metadata  AlertMetadata `json:"metadata"`
-	DedupKey  string        `json:"dedup_key"` // Unique key for deduplication
+	Summary       string        `json:"summary"`
+	Severity      string        `json:"severity"`
+	Status        string        `json:"status"`
+	AlertType     AlertType     `json:"alert_type"`
+	Timestamp     time.Time     `json:"timestamp"`
+	Metadata      AlertMetadata `json:"metadata"`
+	DedupKey      string        `json:"dedup_key"`      // Unique key for deduplication
+	GroupedAlerts []string      `json:"grouped_alerts"` // List of alert IDs grouped together
 }
 
 /*
@@ -65,11 +74,12 @@ PUT /esquery_alert
       "threshold":   { "type": "integer" },
       "alert": {
         "properties": {
-          "summary":   { "type": "text" },
-          "severity":  { "type": "keyword" },
-          "status":    { "type": "keyword" },
-          "timestamp": { "type": "date" },
-          "dedup_key": { "type": "keyword" },
+          "summary":        { "type": "text" },
+          "severity":       { "type": "keyword" },
+          "status":         { "type": "keyword" },
+          "timestamp":      { "type": "date" },
+          "dedup_key":      { "type": "keyword" },
+          "grouped_alerts": { "type": "keyword" },
           "metadata": {
             "properties": {
               "dependencies": { "type": "keyword" },
@@ -89,11 +99,12 @@ PUT /argusgo-alerts
 {
   "mappings": {
     "properties": {
-      "summary":   { "type": "text" },
-      "severity":  { "type": "keyword" },
-      "status":    { "type": "keyword" },
-      "timestamp": { "type": "date" },
-      "dedup_key": { "type": "keyword" },
+      "summary":        { "type": "text" },
+      "severity":       { "type": "keyword" },
+      "status":         { "type": "keyword" },
+      "timestamp":      { "type": "date" },
+      "dedup_key":      { "type": "keyword" },
+      "grouped_alerts": { "type": "keyword" },
       "metadata": {
         "properties": {
           "dependencies": { "type": "keyword" },

@@ -7,6 +7,12 @@ import (
 	"net/http"
 )
 
+const (
+	metricsIndex      = "metrics"
+	esqueryAlertIndex = "esquery_alert"
+	alertsIndex       = "argusgo-alerts"
+)
+
 func main() {
 	esURL := "http://localhost:9200"
 
@@ -35,11 +41,13 @@ func main() {
 	      "threshold":   { "type": "integer" },
 	      "alert": {
 	        "properties": {
-	          "summary":   { "type": "text" },
-	          "severity":  { "type": "keyword" },
-	          "status":    { "type": "keyword" },
-	          "timestamp": { "type": "date" },
-	          "dedup_key": { "type": "keyword" },
+	          "summary":        { "type": "text" },
+	          "severity":       { "type": "keyword" },
+	          "status":         { "type": "keyword" },
+	          "alert_type":     { "type": "keyword" },
+	          "timestamp":      { "type": "date" },
+	          "dedup_key":      { "type": "keyword" },
+	          "grouped_alerts": { "type": "keyword" },
 	          "metadata": {
 	            "properties": {
 	              "dependencies": { "type": "keyword" },
@@ -57,11 +65,13 @@ func main() {
 	alertsMapping := []byte(`{
 	  "mappings": {
 	    "properties": {
-	      "summary":   { "type": "text" },
-	      "severity":  { "type": "keyword" },
-	      "status":    { "type": "keyword" },
-	      "timestamp": { "type": "date" },
-	      "dedup_key": { "type": "keyword" },
+	      "summary":        { "type": "text" },
+	      "severity":       { "type": "keyword" },
+	      "status":         { "type": "keyword" },
+	      "alert_type":     { "type": "keyword" },
+	      "timestamp":      { "type": "date" },
+	      "dedup_key":      { "type": "keyword" },
+	      "grouped_alerts": { "type": "keyword" },
 	      "metadata": {
 	        "properties": {
 	          "dependencies": { "type": "keyword" },
