@@ -7,39 +7,48 @@ import (
 	"argus-go/internal/alert"
 	"argus-go/internal/banner"
 	"argus-go/internal/es"
+	"argus-go/schema"
 )
 
+// main is the entry point of the application.
 func main() {
 	banner.Print()
-
 	esClient := es.New([]string{"http://localhost:9200"})
-	engine := alert.New(esClient)
 
 	for {
-		now := time.Now().Format("15:04:05")
-		fmt.Printf("\n[%s] 👁️  Scan Cycle Started at %s\n", alert.Brand, now)
-
-		rules, err := esClient.FetchThresholdRules()
-		if err != nil || len(rules) == 0 {
-			fmt.Printf("[%s] ℹ️  Waiting for rules in 'alert_rules' index...\n", alert.Brand)
-			time.Sleep(30 * time.Second)
-			continue
-		}
-
-		for _, r := range rules {
-			// Safely assert types or handle defaults if necessary
-			name, _ := r["rule_name"].(string)
-			threshold, _ := r["threshold"].(float64)
-			window, _ := r["window_minutes"].(float64)
-
-			rule := alert.ThresholdRule{
-				RuleName:      name,
-				Threshold:     threshold,
-				WindowMinutes: window,
-			}
-			engine.CheckThreshold(rule)
-		}
-
+		runScanCycle(esClient)
 		time.Sleep(5 * time.Second)
+	}
+}
+
+// runScanCycle loads rules, executes them, and saves alerts.
+func runScanCycle(esClient *es.Client) {
+	now := time.Now().Format("15:04:05")
+	fmt.Printf("\n[ArgusGo] 👁️  Scan Cycle Started at %s\n", now)
+
+	rules, err := alert.FetchESQueryAlertRules(esClient)
+	if err != nil || len(rules) == 0 {
+		fmt.Println("[ArgusGo] ℹ️  Waiting for rules in 'esquery_alert' index...")
+		time.Sleep(30 * time.Second)
+		return
+	}
+
+	for _, rule := range rules {
+		executeAndSaveAlerts(esClient, rule)
+	}
+}
+
+// executeAndSaveAlerts runs a rule and saves any generated alerts.
+func executeAndSaveAlerts(esClient *es.Client, rule schema.ESQueryAlertRule) {
+	fmt.Printf("[ArgusGo] 🚨 Executing Rule: %s\n", rule.Name)
+	alerts, err := alert.ExecuteESQueryAlertRule(esClient, rule)
+	if err != nil {
+		fmt.Printf("[ArgusGo] ❌ Error executing rule %s: %v\n", rule.Name, err)
+		return
+	}
+	for _, a := range alerts {
+		if err := alert.SaveAlert(esClient, a); err != nil {
+			fmt.Printf("[ArgusGo] ❌ Error saving alert: %v\n", err)
+		}
 	}
 }

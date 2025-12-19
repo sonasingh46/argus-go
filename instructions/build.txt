@@ -1,0 +1,56 @@
+- schema/alert.go defines
+    - the ESQuery alert rule
+    - the ESQuery alert rules are indexed in ES as `esquery_alert`
+    - the Alert structure
+    - the generated alerts are saved in ES index `argusgo-alerts`
+
+
+- cmd/main.go
+    - the main entry point of the application
+    - Here, the rules are loaded from ES and executed against the documents in ES. The
+    rules defines which index to query and the query itself.
+    - The results of the queries are processed and alerts are generated based on the defined rules.
+    - The generated alerts are then saved back to the `argusgo-alerts` index in ES.
+
+- internal/alert/esquery_alert.go
+    - contains the logic for executing ESQuery alert rules
+    - defines how to run the queries against ES and process the results to generate alerts
+- internal/alert/fetch_alert_rules.go
+    - contains the logic for fetching alert rules from ES
+    - defines how to retrieve the ESQuery alert rules from the `esquery_alert` index in ES
+- internal/alert/save_alerts.go
+    - contains the logic for saving generated alerts to ES
+    - contains the logic for updating existing alerts in ES if they already exist
+
+- internal/banner/banner.go
+    - contains the logic for displaying the banner when the application starts
+    - defines the banner text and formatting
+
+- internal/es/client.go
+    - contains the logic for creating and managing the ES client
+
+
+# Other important instructions for LLMs:
+ - If you are asked to `build or run the program` do that.
+ - If there are any error in the code during build or run, fix them.
+
+# Local Dev Env Set up Instructions for LLMs:
+- Deploy an ES docker instance using the following command:
+```
+docker run -d --name elasticsearch \
+  -p 9200:9200 \
+  -p 9300:9300 \
+  -e "discovery.type=single-node" \
+  -e "xpack.security.enabled=false" \
+  docker.elastic.co/elasticsearch/elasticsearch:9.2.3
+```
+
+- Deploy an Kibana instance using the following command:
+```
+docker run -d \
+  --name kibana-alerting \
+  --link es-alerting:elasticsearch \
+  -p 5601:5601 \
+  -e "ELASTICSEARCH_HOSTS=http://elasticsearch:9200" \
+  docker.elastic.co/kibana/kibana:9.2.3
+```
