@@ -48,3 +48,24 @@ PUT /metrics
     }
   }
 }
+
+# Decided to store the alerts
+
+PUT /argusgo-alerts
+{
+  "mappings": {
+    "properties": {
+      "summary":   { "type": "text" },
+      "severity":  { "type": "keyword" },
+      "status":    { "type": "keyword" },
+      "timestamp": { "type": "date" },
+      "metadata": {
+        "properties": {
+          "dependencies": { "type": "keyword" },
+          "host":         { "type": "keyword" },
+          "rule_id":      { "type": "keyword" }
+        }
+      }
+    }
+  }
+}
