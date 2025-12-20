@@ -6,13 +6,14 @@ import (
 )
 
 const (
-	metricsIndex      = "metrics"
-	esqueryAlertIndex = "esquery_alert"
-	alertsIndex       = "argusgo-alerts"
+	metricsIndex       = "metrics"
+	esqueryAlertIndex  = "esquery_alert"
+	alertsIndex        = "argusgo-alerts"
+	groupingRulesIndex = "grouping_rules"
 )
 
 func main() {
-	indices := []string{metricsIndex, esqueryAlertIndex, alertsIndex}
+	indices := []string{metricsIndex, esqueryAlertIndex, alertsIndex, groupingRulesIndex}
 
 	for _, idx := range indices {
 		url := fmt.Sprintf("http://localhost:9200/%s", idx)

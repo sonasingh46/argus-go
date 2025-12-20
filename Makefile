@@ -14,3 +14,6 @@ alert-rules:
 
 ingest-metrics:
 	go run scripts/ingest_metrics.go
+
+grouping-rules:
+	go run scripts/create_grouping_rules.go

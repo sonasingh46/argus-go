@@ -9,6 +9,13 @@ const (
 	AlertTypeGrouped AlertType = "grouped"
 )
 
+type GroupingRule struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	GroupByField string `json:"group_by_field"` // e.g., "metadata.host"
+	TimeWindow   string `json:"time_window"`    // e.g., "10m"
+}
+
 // ESQueryAlertRule represents the document structure for the "esquery_alert" index.
 type ESQueryAlertRule struct {
 	ID         string `json:"id"`
@@ -25,6 +32,7 @@ type AlertMetadata struct {
 	Dependencies []string `json:"dependencies,omitempty"`
 	Host         string   `json:"host,omitempty"`
 	RuleID       string   `json:"rule_id,omitempty"`
+	TriggerCount int      `json:"trigger_count,omitempty"`
 }
 
 type Alert struct {

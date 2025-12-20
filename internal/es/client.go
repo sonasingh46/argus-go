@@ -57,3 +57,20 @@ func (c *Client) Search(index string, query map[string]interface{}) (map[string]
 	json.NewDecoder(res.Body).Decode(&r)
 	return r, nil
 }
+
+func (c *Client) Update(index, id string, body map[string]interface{}) (map[string]interface{}, error) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		return nil, err
+	}
+	res, err := c.ES.Update(index, id, &buf)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	var r map[string]interface{}
+	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}

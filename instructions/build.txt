@@ -54,3 +54,10 @@ docker run -d \
   -e "ELASTICSEARCH_HOSTS=http://elasticsearch:9200" \
   docker.elastic.co/kibana/kibana:9.2.3
 ```
+
+
+Notes For Improvements:
+- This is just a POC and a on week project so there is a lot and it is not production grade. However I want to add a list of minor ones
+as they are easy to forget.
+- The alert generation logic should not make an update to alert data if the same
+number of docs are found that generated the alert previously. This will avoid unnecessary updates to ES.

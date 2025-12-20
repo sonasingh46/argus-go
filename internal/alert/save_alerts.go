@@ -33,7 +33,9 @@ func updateAlert(esClient *es.Client, indexName, alertID string, alert schema.Al
 		"doc": alert,
 	}
 	var buf bytes.Buffer
-	json.NewEncoder(&buf).Encode(doc)
+	if err := json.NewEncoder(&buf).Encode(doc); err != nil {
+		return err
+	}
 	req := esapi.UpdateRequest{
 		Index:      indexName,
 		DocumentID: alertID,
@@ -44,7 +46,9 @@ func updateAlert(esClient *es.Client, indexName, alertID string, alert schema.Al
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 	return nil
 }
 

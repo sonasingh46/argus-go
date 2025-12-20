@@ -15,9 +15,67 @@ func fetchMetrics() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "payment-service",
+			"service":   "service-1",
 			"host":      "prod-server-01",
 			"cpu_usage": 95.5,
+		},
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-1",
+			"host":      "prod-server-01",
+			"cpu_usage": 96.5,
+		},
+
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-2",
+			"host":      "prod-server-02",
+			"cpu_usage": 98.5,
+		},
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-2",
+			"host":      "prod-server-02",
+			"cpu_usage": 99.5,
+		},
+
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-3",
+			"host":      "prod-server-03",
+			"cpu_usage": 97,
+		},
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-3",
+			"host":      "prod-server-03",
+			"cpu_usage": 97.5,
+		},
+
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-4",
+			"host":      "prod-server-04",
+			"cpu_usage": 96,
+		},
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-4",
+			"host":      "prod-server-04",
+			"cpu_usage": 96.5,
+		},
+
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-5",
+			"host":      "prod-server-05",
+			"cpu_usage": 98,
+		},
+		{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"service":   "service-5",
+			"host":      "prod-server-05",
+			"cpu_usage": 98.5,
 		},
 	}
 }

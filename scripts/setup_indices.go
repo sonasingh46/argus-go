@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	metricsIndex      = "metrics"
-	esqueryAlertIndex = "esquery_alert"
-	alertsIndex       = "argusgo-alerts"
+	metricsIndex       = "metrics"
+	esqueryAlertIndex  = "esquery_alert"
+	alertsIndex        = "argusgo-alerts"
+	groupingRulesIndex = "grouping_rules"
 )
 
 func main() {
@@ -52,7 +53,8 @@ func main() {
 	            "properties": {
 	              "dependencies": { "type": "keyword" },
 	              "host":         { "type": "keyword" },
-	              "rule_id":      { "type": "keyword" }
+	              "rule_id":      { "type": "keyword" },
+	              "trigger_count": { "type": "integer" }
 	            }
 	          }
 	        }
@@ -76,9 +78,22 @@ func main() {
 	        "properties": {
 	          "dependencies": { "type": "keyword" },
 	          "host":         { "type": "keyword" },
-	          "rule_id":      { "type": "keyword" }
+	          "rule_id":      { "type": "keyword" },
+	          "trigger_count": { "type": "integer" }
 	        }
 	      }
+	    }
+	  }
+	}`)
+
+	// grouping_rules index mapping
+	groupingRulesMapping := []byte(`{
+	  "mappings": {
+	    "properties": {
+	      "id":             { "type": "keyword" },
+	      "name":           { "type": "text" },
+	      "group_by_field": { "type": "keyword" },
+	      "time_window":    { "type": "keyword" }
 	    }
 	  }
 	}`)
@@ -86,6 +101,7 @@ func main() {
 	createIndex(esURL, metricsIndex, metricsMapping)
 	createIndex(esURL, esqueryAlertIndex, esqueryAlertMapping)
 	createIndex(esURL, alertsIndex, alertsMapping)
+	createIndex(esURL, groupingRulesIndex, groupingRulesMapping)
 }
 
 func createIndex(esURL, index string, mapping []byte) {
