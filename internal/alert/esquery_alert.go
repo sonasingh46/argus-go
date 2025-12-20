@@ -1,8 +1,11 @@
 package alert
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"argus-go/internal/es"
@@ -19,13 +22,31 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 	var alerts []schema.Alert
 
 	// Run the ES query and get the hit count
-	hitCount, err := runESQueryForRule(esClient, rule)
+	hitCount, hits, err := runESQueryForRule(esClient, rule)
 	if err != nil {
 		return nil, err
 	}
 
 	// Build the alert object
 	alert := buildAlertFromRule(rule)
+
+	// Populate metadata from hits
+	if len(hits) > 0 {
+		if host, ok := hits[0]["host"].(string); ok {
+			alert.Metadata.Host = host
+		}
+	}
+
+	// Calculate dynamic dedup key if rules are present
+	if rule.DedupRules != nil {
+		dynamicKey := calculateDedupKey(rule.DedupRules, hits)
+		if dynamicKey != "" {
+			alert.DedupKey = dynamicKey
+		} else {
+			alert.DedupKey = generateRandomString()
+		}
+	}
+
 	alert.Status = determineAlertStatus(hitCount, rule.Threshold)
 	alert.Timestamp = time.Now().UTC()
 
@@ -65,10 +86,10 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 
 // runESQueryForRule executes the ES query for the given rule and returns the hit count.
 // It injects a time window filter on the "timestamp" field.
-func runESQueryForRule(esClient *es.Client, rule schema.ESQueryAlertRule) (int, error) {
+func runESQueryForRule(esClient *es.Client, rule schema.ESQueryAlertRule) (int, []map[string]interface{}, error) {
 	query, err := parseQuery(rule.Query)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	injectTimeWindowFilter(query, rule.TimeWindow)
 	return getHitCount(esClient, rule.Index, query)
@@ -118,24 +139,36 @@ func injectTimeWindowFilter(query map[string]interface{}, timeWindow string) {
 }
 
 // getHitCount executes the query and returns the hit count.
-func getHitCount(esClient *es.Client, index string, query map[string]interface{}) (int, error) {
+func getHitCount(esClient *es.Client, index string, query map[string]interface{}) (int, []map[string]interface{}, error) {
 	res, err := esClient.Search(index, query)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	hitsObj, ok := res["hits"].(map[string]interface{})
 	if !ok {
-		return 0, fmt.Errorf("unexpected ES response format: missing hits")
+		return 0, nil, fmt.Errorf("unexpected ES response format: missing hits")
 	}
 	total, ok := hitsObj["total"].(map[string]interface{})
 	if !ok {
-		return 0, fmt.Errorf("unexpected ES response format: missing total")
+		return 0, nil, fmt.Errorf("unexpected ES response format: missing total")
 	}
 	value, ok := total["value"].(float64)
 	if !ok {
-		return 0, fmt.Errorf("unexpected ES response format: total value not float64")
+		return 0, nil, fmt.Errorf("unexpected ES response format: total value not float64")
 	}
-	return int(value), nil
+
+	var hits []map[string]interface{}
+	if hitsArr, ok := hitsObj["hits"].([]interface{}); ok {
+		for _, h := range hitsArr {
+			if hitMap, ok := h.(map[string]interface{}); ok {
+				if source, ok := hitMap["_source"].(map[string]interface{}); ok {
+					hits = append(hits, source)
+				}
+			}
+		}
+	}
+
+	return int(value), hits, nil
 }
 
 // buildAlertFromRule constructs an Alert from the rule definition.
@@ -364,4 +397,36 @@ func updateParentAlert(esClient *es.Client, parentID string, childAlertID string
 	// If we use dedup_key as ID, this works.
 	_, err := esClient.Update(ArgusAlertsIndex, parentID, script)
 	return err
+}
+
+func generateRandomString() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func calculateDedupKey(rules *schema.DedupRules, hits []map[string]interface{}) string {
+	if len(hits) == 0 {
+		return ""
+	}
+	// Use the first hit to extract fields
+	hit := hits[0]
+
+	var parts []string
+	if rules.Key != "" {
+		parts = append(parts, rules.Key)
+	}
+
+	for _, field := range rules.Fields {
+		if val, ok := hit[field]; ok {
+			parts = append(parts, fmt.Sprintf("%v", val))
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "-")
 }

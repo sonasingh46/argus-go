@@ -20,10 +20,14 @@ func fetchDocList() []map[string]interface{} {
 			"query":       `{ "query": { "bool": { "must": [ { "range": { "cpu_usage": { "gte": 90 } } }, { "term": { "service": "service-1" } } ] } } }`,
 			"time_window": "5m",
 			"threshold":   1,
+			"dedup_rules": map[string]interface{}{
+				"key":    "val",
+				"fields": []string{"service"},
+			},
 			"alert": map[string]interface{}{
-				"summary":   "CPU usage above 90%",
-				"severity":  "high",
-				"dedup_key": "cpu-usage-service-1",
+				"summary":  "CPU usage above 90%",
+				"severity": "high",
+				// "dedup_key": "cpu-usage", // Optional now, dynamic key takes precedence
 			},
 		},
 		{
@@ -34,10 +38,14 @@ func fetchDocList() []map[string]interface{} {
 			"query":       `{ "query": { "bool": { "must": [ { "range": { "cpu_usage": { "gte": 90 } } }, { "term": { "service": "service-2" } } ] } } }`,
 			"time_window": "5m",
 			"threshold":   1,
+			"dedup_rules": map[string]interface{}{
+				"key":    "val",
+				"fields": []string{"service"},
+			},
 			"alert": map[string]interface{}{
-				"summary":   "CPU usage above 90%",
-				"severity":  "high",
-				"dedup_key": "cpu-usage-service-2",
+				"summary":  "CPU usage above 90%",
+				"severity": "high",
+				// "dedup_key": "cpu-usage-service-2",
 			},
 		},
 		{
@@ -48,10 +56,14 @@ func fetchDocList() []map[string]interface{} {
 			"query":       `{ "query": { "bool": { "must": [ { "range": { "cpu_usage": { "gte": 90 } } }, { "term": { "service": "service-3" } } ] } } }`,
 			"time_window": "5m",
 			"threshold":   1,
+			"dedup_rules": map[string]interface{}{
+				"key":    "val",
+				"fields": []string{"service"},
+			},
 			"alert": map[string]interface{}{
-				"summary":   "CPU usage above 90%",
-				"severity":  "high",
-				"dedup_key": "cpu-usage-service-3",
+				"summary":  "CPU usage above 90%",
+				"severity": "high",
+				// "dedup_key": "cpu-usage-service-3",
 			},
 		},
 		{
@@ -62,10 +74,14 @@ func fetchDocList() []map[string]interface{} {
 			"query":       `{ "query": { "bool": { "must": [ { "range": { "cpu_usage": { "gte": 90 } } }, { "term": { "service": "service-4" } } ] } } }`,
 			"time_window": "5m",
 			"threshold":   1,
+			"dedup_rules": map[string]interface{}{
+				"key":    "val",
+				"fields": []string{"service"},
+			},
 			"alert": map[string]interface{}{
-				"summary":   "CPU usage above 90%",
-				"severity":  "high",
-				"dedup_key": "cpu-usage-service-4",
+				"summary":  "CPU usage above 90%",
+				"severity": "high",
+				// "dedup_key": "cpu-usage-service-4",
 			},
 		},
 		{
@@ -76,10 +92,14 @@ func fetchDocList() []map[string]interface{} {
 			"query":       `{ "query": { "bool": { "must": [ { "range": { "cpu_usage": { "gte": 90 } } }, { "term": { "service": "service-5" } } ] } } }`,
 			"time_window": "5m",
 			"threshold":   1,
+			"dedup_rules": map[string]interface{}{
+				"key":    "val",
+				"fields": []string{"service"},
+			},
 			"alert": map[string]interface{}{
-				"summary":   "CPU usage above 90%",
-				"severity":  "high",
-				"dedup_key": "cpu-usage-service-5",
+				"summary":  "CPU usage above 90%",
+				"severity": "high",
+				// "dedup_key": "cpu-usage-service-5",
 			},
 		},
 	}

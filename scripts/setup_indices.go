@@ -40,6 +40,12 @@ func main() {
 	      "query":       { "type": "text" },
 	      "time_window": { "type": "keyword" },
 	      "threshold":   { "type": "integer" },
+	      "dedup_rules": {
+	        "properties": {
+	          "key":    { "type": "keyword" },
+	          "fields": { "type": "keyword" }
+	        }
+	      },
 	      "alert": {
 	        "properties": {
 	          "summary":        { "type": "text" },
