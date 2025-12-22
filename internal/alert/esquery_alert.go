@@ -19,13 +19,20 @@ const (
 
 // ExecuteESQueryAlertRule runs the ESQuery alert rule and generates alerts based on the threshold.
 func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) ([]schema.Alert, error) {
-	var alerts []schema.Alert
-
 	// Run the ES query and get the hit count
 	hitCount, hits, err := runESQueryForRule(esClient, rule)
 	if err != nil {
 		return nil, err
 	}
+
+	// CRITICAL FIX: Handle missing data for rules with dynamic keys.
+	// If there are no hits, we cannot calculate the dynamic DedupKey from data.
+	// We must fetch ALL currently ACTIVE alerts for this rule and resolve them.
+	if len(hits) == 0 && rule.DedupRules != nil {
+		return resolveActiveAlertsForRule(esClient, rule)
+	}
+
+	var alerts []schema.Alert
 
 	// Build the alert object
 	alert := buildAlertFromRule(rule)
@@ -82,6 +89,60 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 	alerts = append(alerts, alert)
 	printAlertStatus(alert, rule.ID)
 	return alerts, nil
+}
+
+// resolveActiveAlertsForRule finds all ACTIVE alerts for a rule and returns them as RESOLVED.
+func resolveActiveAlertsForRule(esClient *es.Client, rule schema.ESQueryAlertRule) ([]schema.Alert, error) {
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": []interface{}{
+					map[string]interface{}{"term": map[string]interface{}{"metadata.rule_id": rule.ID}},
+					map[string]interface{}{"term": map[string]interface{}{"status": "ACTIVE"}},
+				},
+			},
+		},
+	}
+
+	res, err := esClient.Search(ArgusAlertsIndex, query)
+	if err != nil {
+		return nil, err
+	}
+
+	var resolvedAlerts []schema.Alert
+	hitsObj, ok := res["hits"].(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+	hits, ok := hitsObj["hits"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	for _, h := range hits {
+		hitMap, ok := h.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		source, ok := hitMap["_source"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		b, _ := json.Marshal(source)
+		var existingAlert schema.Alert
+		if err := json.Unmarshal(b, &existingAlert); err != nil {
+			continue
+		}
+
+		// Mark as resolved
+		existingAlert.Status = "RESOLVED"
+		existingAlert.Timestamp = time.Now().UTC()
+		printAlertStatus(existingAlert, rule.ID)
+		resolvedAlerts = append(resolvedAlerts, existingAlert)
+	}
+
+	return resolvedAlerts, nil
 }
 
 // runESQueryForRule executes the ES query for the given rule and returns the hit count.
