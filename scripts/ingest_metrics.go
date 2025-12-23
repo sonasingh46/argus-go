@@ -35,69 +35,69 @@ func fetchMetrics() []map[string]interface{} {
 			"host":      "prod-server-01",
 			"cpu_usage": 96.5,
 		},
-
-		// call this alert 4
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-2",
-			"host":      "prod-server-01",
-			"cpu_usage": 98.5,
-		},
-
-		// call this alert 5
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-2",
-			"host":      "prod-server-01",
-			"cpu_usage": 99.5,
-		},
-
-		// call this alert 6
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-3",
-			"host":      "prod-server-01",
-			"cpu_usage": 97,
-		},
-
-		// call this alert 7
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-3",
-			"host":      "prod-server-01",
-			"cpu_usage": 97.5,
-		},
-
-		// call this alert 8
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-4",
-			"host":      "prod-server-01",
-			"cpu_usage": 96,
-		},
-
-		// call this alert 9
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-4",
-			"host":      "prod-server-01",
-			"cpu_usage": 96.5,
-		},
-
-		// call this alert 10
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-5",
-			"host":      "prod-server-01",
-			"cpu_usage": 98,
-		},
-		// call this alert 11
-		{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"service":   "service-5",
-			"host":      "prod-server-01",
-			"cpu_usage": 98.5,
-		},
+		//
+		//// call this alert 4
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-2",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 98.5,
+		//},
+		//
+		//// call this alert 5
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-2",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 99.5,
+		//},
+		//
+		//// call this alert 6
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-3",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 97,
+		//},
+		//
+		//// call this alert 7
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-3",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 97.5,
+		//},
+		//
+		//// call this alert 8
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-4",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 96,
+		//},
+		//
+		//// call this alert 9
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-4",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 96.5,
+		//},
+		//
+		//// call this alert 10
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-5",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 98,
+		//},
+		//// call this alert 11
+		//{
+		//	"timestamp": time.Now().UTC().Format(time.RFC3339),
+		//	"service":   "service-5",
+		//	"host":      "prod-server-01",
+		//	"cpu_usage": 98.5,
+		//},
 
 		/*
 			- since the grouping is bases on host and host is same for all above alerts.

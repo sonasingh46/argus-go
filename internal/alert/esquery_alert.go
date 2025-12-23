@@ -1,6 +1,8 @@
 package alert
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -25,10 +27,8 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 		return nil, err
 	}
 
-	// CRITICAL FIX: Handle missing data for rules with dynamic keys.
-	// If there are no hits, we cannot calculate the dynamic DedupKey from data.
-	// We must fetch ALL currently ACTIVE alerts for this rule and resolve them.
-	if len(hits) == 0 && rule.DedupRules != nil {
+	// If the hit count is below the threshold, resolve any existing ACTIVE alerts for this rule.
+	if hitCount < rule.Threshold {
 		return resolveActiveAlertsForRule(esClient, rule)
 	}
 
@@ -48,9 +48,9 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 	if rule.DedupRules != nil {
 		dynamicKey := calculateDedupKey(rule.DedupRules, hits)
 		if dynamicKey != "" {
-			alert.DedupKey = dynamicKey
+			alert.DedupKey = rule.ID + "_" + dynamicKey
 		} else {
-			alert.DedupKey = generateRandomString()
+			alert.DedupKey = rule.ID + "_" + generateRandomString()
 		}
 	}
 
@@ -58,9 +58,8 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 	alert.Timestamp = time.Now().UTC()
 
 	// Check if alert already exists
-	found, existingAlert := fetchExistingAlert(esClient, alert.DedupKey)
+	found, existingAlert := fetchExistingActiveAlert(esClient, alert.DedupKey)
 	if found {
-		// Optionally, merge fields from existingAlert if needed
 		alert.Timestamp = time.Now().UTC()
 
 		if alert.Status == "RESOLVED" {
@@ -252,29 +251,173 @@ func determineAlertStatus(hitCount, threshold int) string {
 	return "RESOLVED"
 }
 
-// fetchExistingAlert tries to fetch an alert by dedupKey from ES.
-func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
-	getRes, err := esClient.ES.Get(ArgusAlertsIndex, dedupKey)
-	if err != nil || getRes.StatusCode != 200 {
+//// fetchExistingAlert tries to fetch an alert by dedupKey from ES.
+//func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
+//	getRes, err := esClient.ES.Get(ArgusAlertsIndex, dedupKey)
+//	if err != nil || getRes.StatusCode != 200 {
+//		return false, schema.Alert{}
+//	}
+//	defer func() {
+//		_ = getRes.Body.Close()
+//	}()
+//	var getResp map[string]interface{}
+//	if err := json.NewDecoder(getRes.Body).Decode(&getResp); err != nil {
+//		return false, schema.Alert{}
+//	}
+//	src, ok := getResp["_source"]
+//	if !ok {
+//		return false, schema.Alert{}
+//	}
+//	b, _ := json.Marshal(src)
+//	var alert schema.Alert
+//	if err := json.Unmarshal(b, &alert); err != nil {
+//		return false, schema.Alert{}
+//	}
+//	return true, alert
+//}
+
+//// fetchExistingAlert fetches a single alert by dedupKey (Document ID) from ES.
+//func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
+//	// 1. Perform the GET request
+//	res, err := esClient.ES.Get(ArgusAlertsIndex, dedupKey)
+//	if err != nil {
+//		return false, schema.Alert{}
+//	}
+//	defer res.Body.Close()
+//
+//	// 2. Handle non-OK statuses (e.g., 404 Not Found)
+//	if res.IsError() {
+//		return false, schema.Alert{}
+//	}
+//
+//	// 3. Define a wrapper to match ES response structure
+//	// This allows us to decode directly into the Alert struct in one pass
+//	var wrapper struct {
+//		Source schema.Alert `json:"_source"`
+//	}
+//
+//	if err := json.NewDecoder(res.Body).Decode(&wrapper); err != nil {
+//		return false, schema.Alert{}
+//	}
+//
+//	return true, wrapper.Source
+//}
+
+//func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
+//	// 1. Construct the Search Query
+//	// We use a "term" query for exact matching on the dedup_key field
+//	query := map[string]interface{}{
+//		"query": map[string]interface{}{
+//			"term": map[string]interface{}{
+//				"dedup_key": dedupKey,
+//			},
+//		},
+//		"size": 1, // It is guaranteed uniqueness, we only need 1 result
+//	}
+//
+//	var buf bytes.Buffer
+//	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+//		return false, schema.Alert{}
+//	}
+//
+//	// 2. Execute the Search request
+//	res, err := esClient.ES.Search(
+//		esClient.ES.Search.WithIndex(ArgusAlertsIndex),
+//		esClient.ES.Search.WithBody(&buf),
+//	)
+//	if err != nil {
+//		return false, schema.Alert{}
+//	}
+//	defer res.Body.Close()
+//
+//	if res.IsError() {
+//		return false, schema.Alert{}
+//	}
+//
+//	// 3. Define the Search Response Structure
+//	// Search returns results inside a "hits" wrapper, unlike the Get API
+//	var searchResult struct {
+//		Hits struct {
+//			Hits []struct {
+//				Source schema.Alert `json:"_source"`
+//			} `json:"hits"`
+//		} `json:"hits"`
+//	}
+//
+//	if err := json.NewDecoder(res.Body).Decode(&searchResult); err != nil {
+//		return false, schema.Alert{}
+//	}
+//
+//	// 4. Return the first hit if it exists
+//	if len(searchResult.Hits.Hits) > 0 {
+//		return true, searchResult.Hits.Hits[0].Source
+//	}
+//
+//	return false, schema.Alert{}
+//}
+
+// fetchExistingActiveAlert searches for a document that matches the dedupKey AND has an ACTIVE status.
+func fetchExistingActiveAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
+	// 1. Construct the Search Query with multiple criteria
+	query := map[string]interface{}{
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"filter": []map[string]interface{}{
+					{
+						"term": map[string]interface{}{
+							"dedup_key": dedupKey,
+						},
+					},
+					{
+						"term": map[string]interface{}{
+							"status": "ACTIVE", // Only fetch if the alert is currently active
+						},
+					},
+				},
+			},
+		},
+		"size": 1,
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(query); err != nil {
 		return false, schema.Alert{}
 	}
-	defer func() {
-		_ = getRes.Body.Close()
-	}()
-	var getResp map[string]interface{}
-	if err := json.NewDecoder(getRes.Body).Decode(&getResp); err != nil {
+
+	// 2. Execute the Search request
+	res, err := esClient.ES.Search(
+		esClient.ES.Search.WithIndex(ArgusAlertsIndex),
+		esClient.ES.Search.WithBody(&buf),
+		esClient.ES.Search.WithContext(context.Background()),
+	)
+	if err != nil {
 		return false, schema.Alert{}
 	}
-	src, ok := getResp["_source"]
-	if !ok {
+	defer res.Body.Close()
+
+	if res.IsError() {
 		return false, schema.Alert{}
 	}
-	b, _ := json.Marshal(src)
-	var alert schema.Alert
-	if err := json.Unmarshal(b, &alert); err != nil {
+
+	// 3. Define the Search Response Structure
+	var searchResult struct {
+		Hits struct {
+			Hits []struct {
+				Source schema.Alert `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&searchResult); err != nil {
 		return false, schema.Alert{}
 	}
-	return true, alert
+
+	// 4. Return the first hit if it exists
+	if len(searchResult.Hits.Hits) > 0 {
+		return true, searchResult.Hits.Hits[0].Source
+	}
+
+	return false, schema.Alert{}
 }
 
 // printAlertStatus prints the alert status to the console.

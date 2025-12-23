@@ -18,7 +18,7 @@ func fetchDocList() []map[string]interface{} {
 			"type":        "esquery",
 			"index":       "metrics",
 			"query":       `{ "query": { "bool": { "must": [ { "range": { "cpu_usage": { "gte": 90 } } }, { "term": { "service": "service-1" } } ] } } }`,
-			"time_window": "5m",
+			"time_window": "30m",
 			"threshold":   1,
 			"dedup_rules": map[string]interface{}{
 				"key":    "val",
