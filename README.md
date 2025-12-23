@@ -2,10 +2,12 @@
 
 **ArgusGo** is a Proof of Concept (PoC) project designed to demonstrate advanced alert management capabilities, specifically focusing on **alert deduplication** and **alert grouping**.
 
+It continuously scans ingested metrics against defined alert and grouping rules, and generates alerts and saves them by applying deduplication and grouping logic to minimize alert noise and improve incident management.
+
 While the project includes an end-to-end flow—from ingesting metrics to evaluating rules and generating alerts—its primary purpose is to showcase how alerts can be intelligently managed to reduce noise and group related incidents.
 
 **Potential as a Downstream Tool:**
-This project can be adapted to act as a downstream processor that simply ingests alerts. Its main job would be to apply **Grouping Rules** to organize alerts and send notifications, significantly reducing noise. This can be done without relying on the project's current deduplication logic (using `dedup_key`).
+This project can be adapted to act as a downstream processor that simply ingests alerts by exposing APIs rather than doing the continuous scan. Its main job would be to apply **Grouping Rules** to organize alerts and send notifications, significantly reducing noise. This can be done without relying on the project's current deduplication and alert generation logic (using `dedup_key`) which exists for the purpose of experimentation.
 
 ## ⚠️ Disclaimer: Not Production Grade
 
@@ -19,7 +21,7 @@ This project can be adapted to act as a downstream processor that simply ingests
 
 ### 1. Alert Deduplication
 ArgusGo prevents alert storms by deduplicating alerts based on configurable keys.
-*   **Mechanism**: Uses a `dedup_key` generated from specific fields (e.g., `host`, `service`).
+*   **Mechanism**: Uses a `dedup_key` generated from specific fields (e.g., `host`, `service`) found in the ingested data (metrics, logs, or other service telemetry). Check `scripts/example_esquery_alert_rules.go` to see how deduplication rules are configured on the alert rule itself.
 *   **Behavior**:
     *   **Active Alerts**: If an alert with the same `dedup_key` is already `ACTIVE`, the system updates the existing alert (e.g., increments a trigger count) instead of creating a new one. There can be **at most one** `ACTIVE` alert for a given `dedup_key`.
     *   **Resolved Alerts**: There can be multiple `RESOLVED` alerts with the same `dedup_key` (representing historical incidents).
@@ -28,7 +30,7 @@ ArgusGo prevents alert storms by deduplicating alerts based on configurable keys
 
 ### 2. Alert Grouping
 Related alerts can be grouped under a single "Parent" alert to provide better context and reduce clutter.
-*   **Mechanism**: Uses `Grouping Rules` to define relationships (e.g., group by `host` or `rule_id` within a time window).
+*   **Mechanism**: Uses `Grouping Rules` to define relationships (e.g., group by `host` or `rule_id` within a time window). Check `scripts/create_grouping_rules.go` for examples.
 *   **Behavior**:
     *   **Parent Alert**: Represents the group.
     *   **Grouped Alerts**: Child alerts that are linked to the parent.
@@ -38,6 +40,8 @@ Related alerts can be grouped under a single "Parent" alert to provide better co
 Alerts transition through states based on the underlying metrics:
 *   **ACTIVE**: The condition (e.g., CPU > 90%) is currently met.
 *   **RESOLVED**: The condition is no longer met. The system automatically resolves alerts when the metric falls below the threshold.
+
+> **Note**: A transition from **ACTIVE** to **RESOLVED** does not happen on the same alert instance. Instead, a new alert instance is created to represent the resolved state.
 
 ## Workflow Diagram
 
