@@ -12,7 +12,7 @@ This project can be adapted to act as a downstream processor that simply ingests
 **Please Note:**
 *   This project is a **Proof of Concept (PoC)** and is **NOT intended for production use**.
 *   It was developed in a short timeframe (a couple of days) with the assistance of Large Language Models (LLMs) for ideation and coding.
-*   **Scalability**: The current implementation is **not scalable**. It processes alerts and rules sequentially and is not designed to handle high throughput or distributed workloads.
+*   **Scalability**: The current implementation is **not scalable**. It processes alerts and rules sequentially and is not designed to handle large volume of data.
 *   **Reliability**: Error handling and edge cases may not be fully covered.
 
 ## Features
@@ -43,17 +43,17 @@ Alerts transition through states based on the underlying metrics:
 
 ```mermaid
 graph TD
-    User[User/Script] -->|Ingest Metrics| ES[(Elasticsearch)]
+    User[User/Script] -->|Ingest Alert Rules, Grouping Rules, Metrics| ES[(Elasticsearch)]
     
     subgraph ArgusGo Engine
         Start[Start Scan Cycle] --> FetchRules[Fetch Alert Rules]
-        FetchRules --> QueryES[Query Metrics Index]
+        FetchRules --> QueryES[Query Index Specified in Alert Rule]
         QueryES --> CheckThreshold{Threshold Breached?}
         
         CheckThreshold -->|No| Resolve[Resolve Existing Alerts]
-        CheckThreshold -->|Yes| Dedup[Generate Dedup Key]
+        CheckThreshold -->|Yes| Dedup[Generate Dedup Key Based on Dedup Rules]
         
-        Dedup --> CheckActive{Active Alert Exists?}
+        Dedup --> CheckActive{Active Alert With the Dedeup Key Exists?}
         CheckActive -->|Yes| Update[Update Trigger Count]
         
         CheckActive -->|No| Grouping{Matches Grouping Rule?}
