@@ -1,4 +1,4 @@
-.PHONY: setup-index clean-index seed-rules alert-rules ingest-metrics
+.PHONY: setup-index clean-index seed-rules alert-rules ingest-metrics grouping-rules run it
 
 setup-index:
 	go run scripts/setup_indices.go
@@ -17,6 +17,9 @@ ingest-metrics:
 
 grouping-rules:
 	go run scripts/create_grouping_rules.go
+
+run:
+	go run cmd/main.go
 
 it:
 	go test -v -count=1 ./integration/...

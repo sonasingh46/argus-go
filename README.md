@@ -88,13 +88,13 @@ graph TD
     *   `example_esquery_alert_rules.go`: Seeds alert rules.
     *   `create_grouping_rules.go`: Seeds grouping rules.
 *   **`integration/`**: Integration tests ensuring the end-to-end flow works as expected.
-*   **`instructions/`**: Miscellaneous build or setup instructions.
+*   **`instructions/`**: Miscellaneous build or setup instructions for LLMs.
 *   **`Makefile`**: Commands to automate build, run, and test tasks.
 
 ## Getting Started
 
 ### Prerequisites
-*   **Go**: 1.20+
+*   **Go**: 1.25+
 *   **Elasticsearch**: Running locally on `http://localhost:9200`.
 *   **Kibana** (Optional): For visualizing alerts.
 
@@ -116,9 +116,13 @@ graph TD
     ```
 
 4.  **Ingest Metrics & Generate Alerts**:
-    Run the script to ingest mock metrics. The application will evaluate these metrics against the rules and generate alerts.
+    Run the script to ingest mock metrics.
     ```bash
     make ingest-metrics
+    ```
+    Then run the application to evaluate these metrics against the rules and generate alerts.
+    ```bash
+    make run
     ```
 
 5.  **View Alerts**:
