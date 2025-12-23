@@ -38,245 +38,245 @@ var _ = Describe("Alert Lifecycle Integration", func() {
 	})
 
 	AfterEach(func() {
-		// cleanupIndices(esClient)
+		cleanupIndices(esClient)
 	})
 
 	// Just create a single alert rule and ingest a singe metric
 	// Assert that alert is created when threshold is breached
 	// Then delete that metric that resolves the alert and assert alert is resolved
-	//Context("When a simple threshold rule is configured", func() {
-	//	It("should create an alert when threshold is breached and resolve it when metric drops", func() {
-	//		// 1. Create Alert Rule
-	//		rule := schema.ESQueryAlertRule{
-	//			ID:         "high_cpu_test",
-	//			Name:       "High CPU Test",
-	//			Type:       "esquery",
-	//			Index:      metricsIndex,
-	//			Query:      `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
-	//			TimeWindow: "5m",
-	//			Threshold:  1,
-	//			DedupRules: &schema.DedupRules{
-	//				Key:    "cpu-alert",
-	//				Fields: []string{"host"},
-	//			},
-	//			Alert: schema.Alert{
-	//				Summary:  "High CPU detected",
-	//				Severity: "high",
-	//			},
-	//		}
-	//		createAlertRule(esClient, rule)
-	//
-	//		// 2. Ingest High CPU Metric
-	//		ingestMetric(esClient, map[string]interface{}{
-	//			"timestamp": time.Now().UTC().Format(time.RFC3339),
-	//			"host":      "test-host-1",
-	//			"cpu_usage": 95.0,
-	//		})
-	//
-	//		// 3. Execute Rule
-	//		executeRuleAndSaveAlerts(esClient, rule)
-	//
-	//		// 4. Verify Alert is ACTIVE
-	//		activeAlerts := fetchActiveAlerts(esClient, "high_cpu_test_cpu-alert-test-host-1")
-	//		Expect(activeAlerts).To(HaveLen(1))
-	//		Expect(activeAlerts[0].Status).To(Equal("ACTIVE"))
-	//		Expect(activeAlerts[0].Metadata.Host).To(Equal("test-host-1"))
-	//
-	//		// 5. Simulate Resolution (delete old metrics)
-	//		deleteMetrics(esClient)
-	//
-	//		// 6. Execute Rule Again
-	//		executeRuleAndSaveAlerts(esClient, rule)
-	//
-	//		// 7. Verify Alert is RESOLVED
-	//		resolvedAlerts := fetchResolvedAlerts(esClient, "high_cpu_test_cpu-alert-test-host-1")
-	//		Expect(resolvedAlerts).To(HaveLen(1))
-	//		Expect(resolvedAlerts[0].Status).To(Equal("RESOLVED"))
-	//	})
-	//})
-	//
-	//Context("When multiple services trigger alerts with deduplication based on service name", func() {
-	//	It("should deduplicate alerts per service and resolve them independently", func() {
-	//		services := []string{"service-1", "service-2", "service-3"}
-	//		var rules []schema.ESQueryAlertRule
-	//
-	//		// 1. Create 3 Alert Rules (one for each service)
-	//		for _, svc := range services {
-	//			rule := schema.ESQueryAlertRule{
-	//				ID:         "rule_" + svc,
-	//				Name:       "High CPU " + svc,
-	//				Type:       "esquery",
-	//				Index:      metricsIndex,
-	//				Query:      fmt.Sprintf(`{ "query": { "bool": { "must": [ { "term": { "service": "%s" } }, { "range": { "cpu_usage": { "gte": 90 } } } ] } } }`, svc),
-	//				TimeWindow: "5m",
-	//				Threshold:  1,
-	//				DedupRules: &schema.DedupRules{
-	//					Fields: []string{"service"},
-	//				},
-	//				Alert: schema.Alert{
-	//					Summary:  "High CPU detected for " + svc,
-	//					Severity: "high",
-	//				},
-	//			}
-	//			createAlertRule(esClient, rule)
-	//			rules = append(rules, rule)
-	//		}
-	//
-	//		// 2. Ingest 5 metrics for each service breaching the threshold
-	//		// Since the dedup key will be based on svc name 3 alerts should be created.
-	//		for _, svc := range services {
-	//			for i := 0; i < 5; i++ {
-	//				ingestMetric(esClient, map[string]interface{}{
-	//					"timestamp": time.Now().UTC().Format(time.RFC3339),
-	//					"host":      "prod-server-01",
-	//					"service":   svc,
-	//					"cpu_usage": 95.0 + float64(i),
-	//				})
-	//			}
-	//		}
-	//
-	//		// 3. Execute Rules and Assert only 3 alerts are created (one per service)
-	//		for _, rule := range rules {
-	//			executeRuleAndSaveAlerts(esClient, rule)
-	//		}
-	//
-	//		for _, svc := range services {
-	//			dedupKey := "rule_" + svc + "_" + svc
-	//			activeAlerts := fetchActiveAlerts(esClient, dedupKey)
-	//			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for %s", svc))
-	//			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-	//		}
-	//
-	//		resolvedServices := make(map[string]bool)
-	//		// Delete metrics for services in a loop and asert alerts resolving independently
-	//		for _, svc := range services {
-	//			deleteMetricsForService(esClient, svc)
-	//			resolvedServices[svc] = true
-	//
-	//			// Re-execute rules
-	//			for _, rule := range rules {
-	//				executeRuleAndSaveAlerts(esClient, rule)
-	//			}
-	//
-	//			// Assert alert for this service is RESOLVED
-	//			dedupKey := "rule_" + svc + "_" + svc
-	//			resolvedAlerts := fetchResolvedAlerts(esClient, dedupKey)
-	//			Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 resolved alert for %s", svc))
-	//
-	//			// Assert other alerts remain ACTIVE
-	//			for _, otherSvc := range services {
-	//				if resolvedServices[otherSvc] {
-	//					continue
-	//				}
-	//				otherDedupKey := "rule_" + otherSvc + "_" + otherSvc
-	//				activeAlerts := fetchActiveAlerts(esClient, otherDedupKey)
-	//				Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for %s", otherSvc))
-	//			}
-	//		}
-	//	})
-	//})
-	//
-	//Context("When multiple services trigger alerts with deduplication based on host name", func() {
-	//	It("should deduplicate alerts per service and resolve them independently", func() {
-	//		services := []string{"service-1", "service-2", "service-3"}
-	//		var rules []schema.ESQueryAlertRule
-	//
-	//		// Create 1 Alert Rule for ALL services
-	//		rule := schema.ESQueryAlertRule{
-	//			ID:    "rule_high_cpu_all_services",
-	//			Name:  "High CPU Usage - All Services",
-	//			Type:  "esquery",
-	//			Index: metricsIndex,
-	//			// The query now only looks for the threshold, irrespective of service name
-	//			Query: `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
-	//
-	//			TimeWindow: "5m",
-	//			Threshold:  1,
-	//
-	//			DedupRules: &schema.DedupRules{
-	//				// By adding "service" here, ES will create a unique alert
-	//				// for every unique combination of host + service
-	//				Fields: []string{"host"},
-	//			},
-	//
-	//			Alert: schema.Alert{
-	//				Summary:  "High CPU detected on service",
-	//				Severity: "high",
-	//			},
-	//		}
-	//		createAlertRule(esClient, rule)
-	//		rules = append(rules, rule)
-	//
-	//		// 2. Ingest 5 metrics for each service breaching the threshold
-	//		// Since the dedup key will be based on host name 1 alert should be created.
-	//		for _, svc := range services {
-	//			for i := 0; i < 5; i++ {
-	//				ingestMetric(esClient, map[string]interface{}{
-	//					"timestamp": time.Now().UTC().Format(time.RFC3339),
-	//					"host":      "prod-server-01",
-	//					"service":   svc,
-	//					"cpu_usage": 95.0 + float64(i),
-	//				})
-	//			}
-	//		}
-	//
-	//		// 3. Execute Rules and Assert only 1 alert is created (for the host)
-	//		for _, rule := range rules {
-	//			executeRuleAndSaveAlerts(esClient, rule)
-	//		}
-	//
-	//		// Fetch all the active alerts to ensure only 1 alert exists
-	//		activeAlerts := fetchOnlyActiveAlerts(esClient)
-	//		Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-	//		Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-	//
-	//		// Fetch by dedup key
-	//		dedupKey := "rule_high_cpu_all_services_prod-server-01"
-	//		activeAlerts = fetchActiveAlerts(esClient, dedupKey)
-	//		Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-	//		Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-	//
-	//		// delete all the metrics for service-1 only
-	//		// alert should still be active as other services are breaching threshold on same host
-	//		deleteMetricsForService(esClient, "service-1")
-	//
-	//		// Re-execute rules
-	//		for _, rule := range rules {
-	//			executeRuleAndSaveAlerts(esClient, rule)
-	//		}
-	//
-	//		// the alert will stil be active as there are still metrics breaching threshold for service-1
-	//		// and other services.
-	//
-	//		// Fetch all the active alerts to ensure only 1 alert exists
-	//		activeAlerts = fetchOnlyActiveAlerts(esClient)
-	//		Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-	//		Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-	//
-	//		// Fetch by dedup key
-	//		dedupKey = "rule_high_cpu_all_services_prod-server-01"
-	//		activeAlerts = fetchActiveAlerts(esClient, dedupKey)
-	//		Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-	//		Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-	//
-	//		// Now delete all metrics for all services on that host to resolve the alert
-	//		deleteMetricsForService(esClient, "service-2")
-	//		deleteMetricsForService(esClient, "service-3")
-	//		// Re-execute rules
-	//		for _, rule := range rules {
-	//			executeRuleAndSaveAlerts(esClient, rule)
-	//		}
-	//
-	//		// Fetch all the active alerts to ensure only 0 alert exists
-	//		activeAlerts = fetchOnlyActiveAlerts(esClient)
-	//		Expect(activeAlerts).To(HaveLen(0), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-	//
-	//		// Fetch by dedup key
-	//		dedupKey = "rule_high_cpu_all_services_prod-server-01"
-	//		resolvedAlerts := fetchResolvedAlerts(esClient, dedupKey)
-	//		Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 resolved alert for host %s", "prod-server-01"))
-	//	})
-	//})
+	Context("When a simple threshold rule is configured", func() {
+		It("should create an alert when threshold is breached and resolve it when metric drops", func() {
+			// 1. Create Alert Rule
+			rule := schema.ESQueryAlertRule{
+				ID:         "high_cpu_test",
+				Name:       "High CPU Test",
+				Type:       "esquery",
+				Index:      metricsIndex,
+				Query:      `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
+				TimeWindow: "5m",
+				Threshold:  1,
+				DedupRules: &schema.DedupRules{
+					Key:    "cpu-alert",
+					Fields: []string{"host"},
+				},
+				Alert: schema.Alert{
+					Summary:  "High CPU detected",
+					Severity: "high",
+				},
+			}
+			createAlertRule(esClient, rule)
+
+			// 2. Ingest High CPU Metric
+			ingestMetric(esClient, map[string]interface{}{
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+				"host":      "test-host-1",
+				"cpu_usage": 95.0,
+			})
+
+			// 3. Execute Rule
+			executeRuleAndSaveAlerts(esClient, rule)
+
+			// 4. Verify Alert is ACTIVE
+			activeAlerts := fetchActiveAlerts(esClient, "high_cpu_test_cpu-alert-test-host-1")
+			Expect(activeAlerts).To(HaveLen(1))
+			Expect(activeAlerts[0].Status).To(Equal("ACTIVE"))
+			Expect(activeAlerts[0].Metadata.Host).To(Equal("test-host-1"))
+
+			// 5. Simulate Resolution (delete old metrics)
+			deleteMetrics(esClient)
+
+			// 6. Execute Rule Again
+			executeRuleAndSaveAlerts(esClient, rule)
+
+			// 7. Verify Alert is RESOLVED
+			resolvedAlerts := fetchResolvedAlerts(esClient, "high_cpu_test_cpu-alert-test-host-1")
+			Expect(resolvedAlerts).To(HaveLen(1))
+			Expect(resolvedAlerts[0].Status).To(Equal("RESOLVED"))
+		})
+	})
+
+	Context("When multiple services trigger alerts with deduplication based on service name", func() {
+		It("should deduplicate alerts per service and resolve them independently", func() {
+			services := []string{"service-1", "service-2", "service-3"}
+			var rules []schema.ESQueryAlertRule
+
+			// 1. Create 3 Alert Rules (one for each service)
+			for _, svc := range services {
+				rule := schema.ESQueryAlertRule{
+					ID:         "rule_" + svc,
+					Name:       "High CPU " + svc,
+					Type:       "esquery",
+					Index:      metricsIndex,
+					Query:      fmt.Sprintf(`{ "query": { "bool": { "must": [ { "term": { "service": "%s" } }, { "range": { "cpu_usage": { "gte": 90 } } } ] } } }`, svc),
+					TimeWindow: "5m",
+					Threshold:  1,
+					DedupRules: &schema.DedupRules{
+						Fields: []string{"service"},
+					},
+					Alert: schema.Alert{
+						Summary:  "High CPU detected for " + svc,
+						Severity: "high",
+					},
+				}
+				createAlertRule(esClient, rule)
+				rules = append(rules, rule)
+			}
+
+			// 2. Ingest 5 metrics for each service breaching the threshold
+			// Since the dedup key will be based on svc name 3 alerts should be created.
+			for _, svc := range services {
+				for i := 0; i < 5; i++ {
+					ingestMetric(esClient, map[string]interface{}{
+						"timestamp": time.Now().UTC().Format(time.RFC3339),
+						"host":      "prod-server-01",
+						"service":   svc,
+						"cpu_usage": 95.0 + float64(i),
+					})
+				}
+			}
+
+			// 3. Execute Rules and Assert only 3 alerts are created (one per service)
+			for _, rule := range rules {
+				executeRuleAndSaveAlerts(esClient, rule)
+			}
+
+			for _, svc := range services {
+				dedupKey := "rule_" + svc + "_" + svc
+				activeAlerts := fetchActiveAlerts(esClient, dedupKey)
+				Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for %s", svc))
+				Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+			}
+
+			resolvedServices := make(map[string]bool)
+			// Delete metrics for services in a loop and asert alerts resolving independently
+			for _, svc := range services {
+				deleteMetricsForService(esClient, svc)
+				resolvedServices[svc] = true
+
+				// Re-execute rules
+				for _, rule := range rules {
+					executeRuleAndSaveAlerts(esClient, rule)
+				}
+
+				// Assert alert for this service is RESOLVED
+				dedupKey := "rule_" + svc + "_" + svc
+				resolvedAlerts := fetchResolvedAlerts(esClient, dedupKey)
+				Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 resolved alert for %s", svc))
+
+				// Assert other alerts remain ACTIVE
+				for _, otherSvc := range services {
+					if resolvedServices[otherSvc] {
+						continue
+					}
+					otherDedupKey := "rule_" + otherSvc + "_" + otherSvc
+					activeAlerts := fetchActiveAlerts(esClient, otherDedupKey)
+					Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for %s", otherSvc))
+				}
+			}
+		})
+	})
+
+	Context("When multiple services trigger alerts with deduplication based on host name", func() {
+		It("should deduplicate alerts per service and resolve them independently", func() {
+			services := []string{"service-1", "service-2", "service-3"}
+			var rules []schema.ESQueryAlertRule
+
+			// Create 1 Alert Rule for ALL services
+			rule := schema.ESQueryAlertRule{
+				ID:    "rule_high_cpu_all_services",
+				Name:  "High CPU Usage - All Services",
+				Type:  "esquery",
+				Index: metricsIndex,
+				// The query now only looks for the threshold, irrespective of service name
+				Query: `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
+
+				TimeWindow: "5m",
+				Threshold:  1,
+
+				DedupRules: &schema.DedupRules{
+					// By adding "service" here, ES will create a unique alert
+					// for every unique combination of host + service
+					Fields: []string{"host"},
+				},
+
+				Alert: schema.Alert{
+					Summary:  "High CPU detected on service",
+					Severity: "high",
+				},
+			}
+			createAlertRule(esClient, rule)
+			rules = append(rules, rule)
+
+			// 2. Ingest 5 metrics for each service breaching the threshold
+			// Since the dedup key will be based on host name 1 alert should be created.
+			for _, svc := range services {
+				for i := 0; i < 5; i++ {
+					ingestMetric(esClient, map[string]interface{}{
+						"timestamp": time.Now().UTC().Format(time.RFC3339),
+						"host":      "prod-server-01",
+						"service":   svc,
+						"cpu_usage": 95.0 + float64(i),
+					})
+				}
+			}
+
+			// 3. Execute Rules and Assert only 1 alert is created (for the host)
+			for _, rule := range rules {
+				executeRuleAndSaveAlerts(esClient, rule)
+			}
+
+			// Fetch all the active alerts to ensure only 1 alert exists
+			activeAlerts := fetchOnlyActiveAlerts(esClient)
+			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
+			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+
+			// Fetch by dedup key
+			dedupKey := "rule_high_cpu_all_services_prod-server-01"
+			activeAlerts = fetchActiveAlerts(esClient, dedupKey)
+			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
+			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+
+			// delete all the metrics for service-1 only
+			// alert should still be active as other services are breaching threshold on same host
+			deleteMetricsForService(esClient, "service-1")
+
+			// Re-execute rules
+			for _, rule := range rules {
+				executeRuleAndSaveAlerts(esClient, rule)
+			}
+
+			// the alert will stil be active as there are still metrics breaching threshold for service-1
+			// and other services.
+
+			// Fetch all the active alerts to ensure only 1 alert exists
+			activeAlerts = fetchOnlyActiveAlerts(esClient)
+			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
+			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+
+			// Fetch by dedup key
+			dedupKey = "rule_high_cpu_all_services_prod-server-01"
+			activeAlerts = fetchActiveAlerts(esClient, dedupKey)
+			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
+			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+
+			// Now delete all metrics for all services on that host to resolve the alert
+			deleteMetricsForService(esClient, "service-2")
+			deleteMetricsForService(esClient, "service-3")
+			// Re-execute rules
+			for _, rule := range rules {
+				executeRuleAndSaveAlerts(esClient, rule)
+			}
+
+			// Fetch all the active alerts to ensure only 0 alert exists
+			activeAlerts = fetchOnlyActiveAlerts(esClient)
+			Expect(activeAlerts).To(HaveLen(0), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
+
+			// Fetch by dedup key
+			dedupKey = "rule_high_cpu_all_services_prod-server-01"
+			resolvedAlerts := fetchResolvedAlerts(esClient, dedupKey)
+			Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 resolved alert for host %s", "prod-server-01"))
+		})
+	})
 
 	Context("When grouping rules are configured", func() {
 		It("should group alerts based on grouping rules", func() {
