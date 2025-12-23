@@ -17,3 +17,6 @@ ingest-metrics:
 
 grouping-rules:
 	go run scripts/create_grouping_rules.go
+
+it:
+	go test -v -count=1 ./integration/...
