@@ -3,8 +3,6 @@ package alert
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -27,80 +25,165 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 		return nil, err
 	}
 
-	// If the hit count is below the threshold, resolve any existing ACTIVE alerts for this rule.
-	if hitCount < rule.Threshold {
-		return resolveActiveAlertsForRule(esClient, rule)
-	}
-
 	var alerts []schema.Alert
 
-	// Build the alert object
-	alert := buildAlertFromRule(rule)
-
-	// Populate metadata from hits
-	if len(hits) > 0 {
-		if host, ok := hits[0]["host"].(string); ok {
-			alert.Metadata.Host = host
-		}
-	}
-
-	// Calculate dynamic dedup key if rules are present
+	// 1. Group hits by dedup key
+	groupedHits := make(map[string][]map[string]interface{})
 	if rule.DedupRules != nil {
-		dynamicKey := calculateDedupKey(rule.DedupRules, hits)
-		if dynamicKey != "" {
-			alert.DedupKey = rule.ID + "_" + dynamicKey
-		} else {
-			alert.DedupKey = rule.ID + "_" + generateRandomString()
-		}
-	}
-
-	alert.Status = determineAlertStatus(hitCount, rule.Threshold)
-	alert.Timestamp = time.Now().UTC()
-
-	// Check if alert already exists
-	found, existingAlert := fetchExistingActiveAlert(esClient, alert.DedupKey)
-	if found {
-		alert.Timestamp = time.Now().UTC()
-
-		if alert.Status == "RESOLVED" {
-			alert.Metadata.TriggerCount = existingAlert.Metadata.TriggerCount
-		} else {
-			alert.Metadata.TriggerCount = existingAlert.Metadata.TriggerCount + 1
-		}
-
-		alert.AlertType = existingAlert.AlertType
-		alert.GroupedAlerts = existingAlert.GroupedAlerts
-	} else {
-		alert.Metadata.TriggerCount = 1
-		// New alert, check if it should be grouped
-		parentAlertID, shouldGroup := checkGroupingRules(esClient, alert)
-		if shouldGroup {
-			alert.AlertType = schema.AlertTypeGrouped
-			// Update parent alert
-			if err := updateParentAlert(esClient, parentAlertID, alert.DedupKey); err != nil {
-				fmt.Printf("Error updating parent alert: %v\n", err)
+		for _, hit := range hits {
+			fullKey := calculateDedupKey(rule.ID, rule.DedupRules, hit)
+			if fullKey != "" {
+				groupedHits[fullKey] = append(groupedHits[fullKey], hit)
 			}
-		} else {
-			alert.AlertType = schema.AlertTypeParent
+		}
+	} else {
+		// No dedup rules, treat all hits as one group
+		if hitCount > 0 {
+			groupedHits[rule.ID] = hits
 		}
 	}
 
-	alerts = append(alerts, alert)
-	printAlertStatus(alert, rule.ID)
+	// 2. Fetch existing active alerts for this rule to handle resolution
+	existingAlertsMap := make(map[string]schema.Alert)
+	activeAlerts, err := fetchActiveAlertsForRule(esClient, rule.ID)
+	if err == nil {
+		for _, a := range activeAlerts {
+			existingAlertsMap[a.DedupKey] = a
+		}
+	}
+
+	// Fetch grouping rules once
+	groupingRules, err := fetchGroupingRules(esClient)
+	if err != nil {
+		fmt.Printf("Error fetching grouping rules: %v\n", err)
+	}
+
+	// Cache for newly created parents in this batch.
+	// Map: GroupingRuleID -> Map: GroupValue -> ParentDedupKey
+	newParents := make(map[string]map[string]string)
+
+	// 3. Process groups and generate ACTIVE alerts
+	processedKeys := make(map[string]bool)
+
+	for dedupKey, groupHits := range groupedHits {
+		// Check threshold per group
+		if len(groupHits) < rule.Threshold {
+			continue
+		}
+
+		processedKeys[dedupKey] = true
+
+		// Build the alert object
+		alert := buildAlertFromRule(rule)
+		alert.DedupKey = dedupKey
+		alert.Timestamp = time.Now().UTC()
+		alert.Status = "ACTIVE"
+
+		// Populate metadata from first hit in group
+		if len(groupHits) > 0 {
+			if host, ok := groupHits[0]["host"].(string); ok {
+				alert.Metadata.Host = host
+			}
+		}
+
+		// Check if alert already exists
+		if existingAlert, found := existingAlertsMap[dedupKey]; found {
+			alert.Metadata.TriggerCount = existingAlert.Metadata.TriggerCount + 1
+			alert.AlertType = existingAlert.AlertType
+			alert.GroupedAlerts = existingAlert.GroupedAlerts
+		} else {
+			alert.Metadata.TriggerCount = 1
+			// New alert, check if it should be grouped
+
+			isGrouped := false
+			var parentID string
+			var parentIsNew bool
+
+			for _, gr := range groupingRules {
+				val := getFieldValue(alert, gr.GroupByField)
+				if val == "" {
+					continue
+				}
+
+				// Check cache (newly created parents)
+				if parents, ok := newParents[gr.ID]; ok {
+					if pid, ok := parents[val]; ok {
+						parentID = pid
+						isGrouped = true
+						parentIsNew = true
+						break
+					}
+				}
+
+				// Check ES (existing parents)
+				pid, found := findMatchingParentAlert(esClient, alert, gr)
+				if found {
+					parentID = pid
+					isGrouped = true
+					parentIsNew = false
+					break
+				}
+			}
+
+			if isGrouped {
+				alert.AlertType = schema.AlertTypeGrouped
+				// Update parent alert
+				if parentIsNew {
+					// Update parent in local alerts slice
+					for i := range alerts {
+						if alerts[i].DedupKey == parentID {
+							alerts[i].GroupedAlerts = append(alerts[i].GroupedAlerts, alert.DedupKey)
+							break
+						}
+					}
+				} else {
+					if err := updateParentAlert(esClient, parentID, alert.DedupKey); err != nil {
+						fmt.Printf("Error updating parent alert: %v\n", err)
+					}
+				}
+			} else {
+				alert.AlertType = schema.AlertTypeParent
+				// Register as potential parent
+				for _, gr := range groupingRules {
+					val := getFieldValue(alert, gr.GroupByField)
+					if val != "" {
+						if newParents[gr.ID] == nil {
+							newParents[gr.ID] = make(map[string]string)
+						}
+						newParents[gr.ID][val] = alert.DedupKey
+					}
+				}
+			}
+		}
+
+		alerts = append(alerts, alert)
+		printAlertStatus(alert, rule.ID)
+	}
+
+	// 4. Resolve alerts that are no longer active
+	for key, existingAlert := range existingAlertsMap {
+		if !processedKeys[key] {
+			existingAlert.Status = "RESOLVED"
+			existingAlert.Timestamp = time.Now().UTC()
+			alerts = append(alerts, existingAlert)
+			printAlertStatus(existingAlert, rule.ID)
+		}
+	}
+
 	return alerts, nil
 }
 
-// resolveActiveAlertsForRule finds all ACTIVE alerts for a rule and returns them as RESOLVED.
-func resolveActiveAlertsForRule(esClient *es.Client, rule schema.ESQueryAlertRule) ([]schema.Alert, error) {
+func fetchActiveAlertsForRule(esClient *es.Client, ruleID string) ([]schema.Alert, error) {
 	query := map[string]interface{}{
 		"query": map[string]interface{}{
 			"bool": map[string]interface{}{
 				"must": []interface{}{
-					map[string]interface{}{"term": map[string]interface{}{"metadata.rule_id": rule.ID}},
+					map[string]interface{}{"term": map[string]interface{}{"metadata.rule_id": ruleID}},
 					map[string]interface{}{"term": map[string]interface{}{"status": "ACTIVE"}},
 				},
 			},
 		},
+		"size": 1000,
 	}
 
 	res, err := esClient.Search(ArgusAlertsIndex, query)
@@ -108,7 +191,7 @@ func resolveActiveAlertsForRule(esClient *es.Client, rule schema.ESQueryAlertRul
 		return nil, err
 	}
 
-	var resolvedAlerts []schema.Alert
+	var alerts []schema.Alert
 	hitsObj, ok := res["hits"].(map[string]interface{})
 	if !ok {
 		return nil, nil
@@ -129,19 +212,12 @@ func resolveActiveAlertsForRule(esClient *es.Client, rule schema.ESQueryAlertRul
 		}
 
 		b, _ := json.Marshal(source)
-		var existingAlert schema.Alert
-		if err := json.Unmarshal(b, &existingAlert); err != nil {
-			continue
+		var a schema.Alert
+		if err := json.Unmarshal(b, &a); err == nil {
+			alerts = append(alerts, a)
 		}
-
-		// Mark as resolved
-		existingAlert.Status = "RESOLVED"
-		existingAlert.Timestamp = time.Now().UTC()
-		printAlertStatus(existingAlert, rule.ID)
-		resolvedAlerts = append(resolvedAlerts, existingAlert)
 	}
-
-	return resolvedAlerts, nil
+	return alerts, nil
 }
 
 // runESQueryForRule executes the ES query for the given rule and returns the hit count.
@@ -243,119 +319,6 @@ func buildAlertFromRule(rule schema.ESQueryAlertRule) schema.Alert {
 	return alert
 }
 
-// determineAlertStatus returns "ACTIVE" or "RESOLVED" based on hit count and threshold.
-func determineAlertStatus(hitCount, threshold int) string {
-	if hitCount >= threshold {
-		return "ACTIVE"
-	}
-	return "RESOLVED"
-}
-
-//// fetchExistingAlert tries to fetch an alert by dedupKey from ES.
-//func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
-//	getRes, err := esClient.ES.Get(ArgusAlertsIndex, dedupKey)
-//	if err != nil || getRes.StatusCode != 200 {
-//		return false, schema.Alert{}
-//	}
-//	defer func() {
-//		_ = getRes.Body.Close()
-//	}()
-//	var getResp map[string]interface{}
-//	if err := json.NewDecoder(getRes.Body).Decode(&getResp); err != nil {
-//		return false, schema.Alert{}
-//	}
-//	src, ok := getResp["_source"]
-//	if !ok {
-//		return false, schema.Alert{}
-//	}
-//	b, _ := json.Marshal(src)
-//	var alert schema.Alert
-//	if err := json.Unmarshal(b, &alert); err != nil {
-//		return false, schema.Alert{}
-//	}
-//	return true, alert
-//}
-
-//// fetchExistingAlert fetches a single alert by dedupKey (Document ID) from ES.
-//func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
-//	// 1. Perform the GET request
-//	res, err := esClient.ES.Get(ArgusAlertsIndex, dedupKey)
-//	if err != nil {
-//		return false, schema.Alert{}
-//	}
-//	defer res.Body.Close()
-//
-//	// 2. Handle non-OK statuses (e.g., 404 Not Found)
-//	if res.IsError() {
-//		return false, schema.Alert{}
-//	}
-//
-//	// 3. Define a wrapper to match ES response structure
-//	// This allows us to decode directly into the Alert struct in one pass
-//	var wrapper struct {
-//		Source schema.Alert `json:"_source"`
-//	}
-//
-//	if err := json.NewDecoder(res.Body).Decode(&wrapper); err != nil {
-//		return false, schema.Alert{}
-//	}
-//
-//	return true, wrapper.Source
-//}
-
-//func fetchExistingAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
-//	// 1. Construct the Search Query
-//	// We use a "term" query for exact matching on the dedup_key field
-//	query := map[string]interface{}{
-//		"query": map[string]interface{}{
-//			"term": map[string]interface{}{
-//				"dedup_key": dedupKey,
-//			},
-//		},
-//		"size": 1, // It is guaranteed uniqueness, we only need 1 result
-//	}
-//
-//	var buf bytes.Buffer
-//	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-//		return false, schema.Alert{}
-//	}
-//
-//	// 2. Execute the Search request
-//	res, err := esClient.ES.Search(
-//		esClient.ES.Search.WithIndex(ArgusAlertsIndex),
-//		esClient.ES.Search.WithBody(&buf),
-//	)
-//	if err != nil {
-//		return false, schema.Alert{}
-//	}
-//	defer res.Body.Close()
-//
-//	if res.IsError() {
-//		return false, schema.Alert{}
-//	}
-//
-//	// 3. Define the Search Response Structure
-//	// Search returns results inside a "hits" wrapper, unlike the Get API
-//	var searchResult struct {
-//		Hits struct {
-//			Hits []struct {
-//				Source schema.Alert `json:"_source"`
-//			} `json:"hits"`
-//		} `json:"hits"`
-//	}
-//
-//	if err := json.NewDecoder(res.Body).Decode(&searchResult); err != nil {
-//		return false, schema.Alert{}
-//	}
-//
-//	// 4. Return the first hit if it exists
-//	if len(searchResult.Hits.Hits) > 0 {
-//		return true, searchResult.Hits.Hits[0].Source
-//	}
-//
-//	return false, schema.Alert{}
-//}
-
 // fetchExistingActiveAlert searches for a document that matches the dedupKey AND has an ACTIVE status.
 func fetchExistingActiveAlert(esClient *es.Client, dedupKey string) (bool, schema.Alert) {
 	// 1. Construct the Search Query with multiple criteria
@@ -427,26 +390,6 @@ func printAlertStatus(alert schema.Alert, ruleID string) {
 	} else {
 		fmt.Println("[ArgusGo] Alert Resolved", ruleID)
 	}
-}
-
-func checkGroupingRules(esClient *es.Client, alert schema.Alert) (string, bool) {
-	// Fetch all grouping rules
-	// In a real scenario, we might want to cache these or fetch only relevant ones
-	rules, err := fetchGroupingRules(esClient)
-	if err != nil {
-		fmt.Printf("Error fetching grouping rules: %v\n", err)
-		return "", false
-	}
-
-	for _, rule := range rules {
-		// Check if there is a parent alert that matches the grouping rule
-		parentID, found := findMatchingParentAlert(esClient, alert, rule)
-		if found {
-			return parentID, true
-		}
-	}
-
-	return "", false
 }
 
 func fetchGroupingRules(esClient *es.Client) ([]schema.GroupingRule, error) {
@@ -603,21 +546,7 @@ func updateParentAlert(esClient *es.Client, parentID string, childAlertID string
 	return err
 }
 
-func generateRandomString() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(b)
-}
-
-func calculateDedupKey(rules *schema.DedupRules, hits []map[string]interface{}) string {
-	if len(hits) == 0 {
-		return ""
-	}
-	// Use the first hit to extract fields
-	hit := hits[0]
-
+func calculateDedupKey(ruleID string, rules *schema.DedupRules, hit map[string]interface{}) string {
 	var parts []string
 	if rules.Key != "" {
 		parts = append(parts, rules.Key)
@@ -632,5 +561,5 @@ func calculateDedupKey(rules *schema.DedupRules, hits []map[string]interface{}) 
 	if len(parts) == 0 {
 		return ""
 	}
-	return strings.Join(parts, "-")
+	return ruleID + "_" + strings.Join(parts, "-")
 }
