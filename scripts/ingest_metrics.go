@@ -67,7 +67,7 @@ func fetchMetrics() []map[string]interface{} {
 			"host":      "prod-server-01",
 			"cpu_usage": 97.5,
 		},
-		
+
 		// call this alert 8
 		{
 			"timestamp": time.Now().UTC().Format(time.RFC3339),

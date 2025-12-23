@@ -21,7 +21,6 @@ func fetchDocList() []map[string]interface{} {
 			"time_window": "30m",
 			"threshold":   1,
 			"dedup_rules": map[string]interface{}{
-				"key":    "val",
 				"fields": []string{"service"},
 			},
 			"alert": map[string]interface{}{
@@ -39,7 +38,6 @@ func fetchDocList() []map[string]interface{} {
 			"time_window": "5m",
 			"threshold":   1,
 			"dedup_rules": map[string]interface{}{
-				"key":    "val",
 				"fields": []string{"service"},
 			},
 			"alert": map[string]interface{}{
@@ -57,7 +55,6 @@ func fetchDocList() []map[string]interface{} {
 			"time_window": "5m",
 			"threshold":   1,
 			"dedup_rules": map[string]interface{}{
-				"key":    "val",
 				"fields": []string{"service"},
 			},
 			"alert": map[string]interface{}{
@@ -75,7 +72,6 @@ func fetchDocList() []map[string]interface{} {
 			"time_window": "5m",
 			"threshold":   1,
 			"dedup_rules": map[string]interface{}{
-				"key":    "val",
 				"fields": []string{"service"},
 			},
 			"alert": map[string]interface{}{
@@ -93,7 +89,6 @@ func fetchDocList() []map[string]interface{} {
 			"time_window": "5m",
 			"threshold":   1,
 			"dedup_rules": map[string]interface{}{
-				"key":    "val",
 				"fields": []string{"service"},
 			},
 			"alert": map[string]interface{}{
