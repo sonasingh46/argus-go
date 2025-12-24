@@ -17,6 +17,10 @@ This project can be adapted to act as a downstream processor that simply ingests
 *   **Scalability**: The current implementation is **not scalable**. It processes alerts and rules sequentially and is not designed to handle large volume of data.
 *   **Reliability**: Error handling and edge cases may not be fully covered.
 
+## Demo
+
+![ArgusGo Demo](demo/argus-demo.mp4)
+
 ## Features
 
 ### 1. Alert Deduplication
