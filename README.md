@@ -100,7 +100,10 @@ graph TD
 
 ### Setup & Running Scenarios
 
-1.  **Start Elasticsearch**: Ensure your local ES instance is up.
+1.  **Start Elasticsearch**: Ensure your local ES instance is up. You can use the provided make command to start Elasticsearch and Kibana using Docker:
+    ```bash
+    make setup-devenv
+    ```
 
 2.  **Setup Indices**:
     Initialize the Elasticsearch indices (`metrics`, `argusgo-alerts`, `esquery_alert`, `grouping_rules`).
@@ -141,6 +144,11 @@ graph TD
 ### Running Integration Tests
 
 The project includes a suite of integration tests using Ginkgo to verify the alert lifecycle, deduplication, and grouping logic.
+
+**Prerequisite:** Ensure the local development environment is up and running. If not, start it using:
+```bash
+make setup-devenv
+```
 
 To run the tests:
 

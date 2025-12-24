@@ -1,4 +1,10 @@
-.PHONY: setup-index clean-index seed-rules alert-rules ingest-metrics grouping-rules run it
+.PHONY: setup-index clean-index seed-rules alert-rules ingest-metrics grouping-rules run it setup-devenv teardown-devenv
+
+setup-devenv:
+	docker compose up -d
+
+teardown-devenv:
+	docker compose down
 
 setup-index:
 	go run scripts/setup_indices.go
@@ -23,3 +29,4 @@ run:
 
 it:
 	go test -v -count=1 ./integration/...
+
