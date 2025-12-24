@@ -73,9 +73,7 @@ graph TD
     CreateParent --> Save
 ```
 
-## Demo
 
-![ArgusGo Demo](demo/argus-demo.mp4)
 
 ## Directory Structure
 
