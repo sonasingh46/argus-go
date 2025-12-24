@@ -163,6 +163,36 @@ func ExecuteESQueryAlertRule(esClient *es.Client, rule schema.ESQueryAlertRule) 
 	// 4. Resolve alerts that are no longer active
 	for key, existingAlert := range existingAlertsMap {
 		if !processedKeys[key] {
+			// Check if it is a parent alert
+			if existingAlert.AlertType == schema.AlertTypeParent {
+				hasActiveChild := false
+				for _, childKey := range existingAlert.GroupedAlerts {
+					// 1. Check if active in current batch (same rule)
+					if processedKeys[childKey] {
+						hasActiveChild = true
+						break
+					}
+
+					// 2. Check if it is known to be resolving (same rule)
+					if _, known := existingAlertsMap[childKey]; known {
+						// It is in existingAlertsMap but not processedKeys, so it is resolving.
+						// So it is NOT active.
+						continue
+					}
+
+					// 3. Unknown (different rule or old). Check ES.
+					active, _ := fetchExistingActiveAlert(esClient, childKey)
+					if active {
+						hasActiveChild = true
+						break
+					}
+				}
+
+				if hasActiveChild {
+					continue
+				}
+			}
+
 			existingAlert.Status = "RESOLVED"
 			existingAlert.Timestamp = time.Now().UTC()
 			alerts = append(alerts, existingAlert)

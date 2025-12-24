@@ -364,6 +364,155 @@ var _ = Describe("Alert Lifecycle Integration", func() {
 			}
 		})
 	})
+
+	Context("When multiple alerts are grouped together", func() {
+		It("all the alerts including the parent and the grouped alert should be resolved for the parent to resolve", func() {
+			// 1. Create Grouping Rule
+			// We group by rule_id so that all alerts from the same rule are grouped together
+			groupingRule := schema.GroupingRule{
+				ID:           "group_by_host",
+				Name:         "Group by Host",
+				GroupByField: "metadata.host",
+				TimeWindow:   "10m",
+			}
+
+			createGroupingRule(esClient, groupingRule)
+
+			// 2. Create Alert Rule
+			rule := schema.ESQueryAlertRule{
+				ID:         "cpu_breach_grouping_test",
+				Name:       "CPU Breach Grouping Test",
+				Type:       "esquery",
+				Index:      metricsIndex,
+				Query:      `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
+				TimeWindow: "5m",
+				Threshold:  1,
+				DedupRules: &schema.DedupRules{
+					// so that each host service alert are unique and does
+					// not get deduped
+					Fields: []string{"service", "host"},
+				},
+				Alert: schema.Alert{
+					Summary:  "High CPU detected",
+					Severity: "high",
+				},
+			}
+			createAlertRule(esClient, rule)
+			services := []string{"service-1", "service-2", "service-3"}
+			hosts := []string{"host-1", "host-2", "host-3"}
+
+			// 3. Ingest metrics and execute rule sequentially to generate multiple alerts
+			// Total 9 metrics (3 per host) will be ingested
+			for _, host := range hosts {
+				for _, svc := range services {
+					ingestMetric(esClient, map[string]interface{}{
+						"timestamp": time.Now().UTC().Format(time.RFC3339),
+						"host":      host,
+						"cpu_usage": 97.0,
+						"service":   svc,
+					})
+				}
+			}
+
+			executeRuleAndSaveAlerts(esClient, rule)
+
+			// 4. Assert that there are 9 active alerts
+			activeAlerts := fetchOnlyActiveAlerts(esClient)
+			Expect(activeAlerts).To(HaveLen(9))
+
+			// 5. Assert parent/grouped status
+			parentCount := 0
+			groupedCount := 0
+			parentsByHost := make(map[string]schema.Alert)
+
+			for _, a := range activeAlerts {
+				if a.AlertType == "parent" {
+					parentCount++
+					parentsByHost[a.Metadata.Host] = a
+				} else if a.AlertType == "grouped" {
+					groupedCount++
+				}
+			}
+
+			Expect(parentCount).To(Equal(3), "Expected exactly 3 parent alerts (1 per host)")
+			Expect(groupedCount).To(Equal(6), "Expected exactly 6 grouped alerts (2 per host)")
+			Expect(parentsByHost).To(HaveLen(3))
+
+			// 6. Assert parent has grouped alerts IDs
+			refreshIndex(esClient, alertsIndex)
+
+			for host, parent := range parentsByHost {
+				// Fetch parent again to get updated grouped_alerts
+				activeParent := fetchActiveAlerts(esClient, parent.DedupKey)
+				Expect(activeParent).To(HaveLen(1))
+				freshParent := activeParent[0]
+
+				Expect(freshParent.GroupedAlerts).To(HaveLen(2), fmt.Sprintf("Host %s parent should have 2 grouped alerts", host))
+			}
+
+			// search all the metrics for service-1 and delete them.
+			deleteMetricsForService(esClient, "service-1")
+			// re execute rule
+			executeRuleAndSaveAlerts(esClient, rule)
+			// Assert that service-1 behavior depends on whether it is parent or grouped
+			for host := range parentsByHost {
+				parent := parentsByHost[host]
+				service1Key := fmt.Sprintf("cpu_breach_grouping_test_service-1-%s", host)
+
+				if parent.DedupKey == service1Key {
+					// Service-1 is Parent. It should stay ACTIVE because other children are active.
+					activeParents := fetchActiveAlerts(esClient, service1Key)
+					Expect(activeParents).To(HaveLen(1), fmt.Sprintf("Expected Parent Service-1 to remain active on host %s", host))
+				} else {
+					// Service-1 is Grouped. It should RESOLVE.
+					resolvedAlerts := fetchResolvedAlerts(esClient, service1Key)
+					Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected resolved alert for service-1 on host %s", host))
+
+					// And the Parent (whoever it is) should stay ACTIVE.
+					activeParents := fetchActiveAlerts(esClient, parent.DedupKey)
+					Expect(activeParents).To(HaveLen(1), fmt.Sprintf("Expected Parent %s to remain active on host %s", parent.DedupKey, host))
+				}
+			}
+
+			// Now delete Service-2 (Grouped)
+			deleteMetricsForService(esClient, "service-2")
+			executeRuleAndSaveAlerts(esClient, rule)
+
+			for host := range parentsByHost {
+				parent := parentsByHost[host]
+				service2Key := fmt.Sprintf("cpu_breach_grouping_test_service-2-%s", host)
+
+				if parent.DedupKey == service2Key {
+					// Service-2 is Parent. It should stay ACTIVE.
+					activeParents := fetchActiveAlerts(esClient, service2Key)
+					Expect(activeParents).To(HaveLen(1), fmt.Sprintf("Expected Parent Service-2 to remain active on host %s", host))
+				} else {
+					// Service-2 is Grouped. It should RESOLVE.
+					resolvedAlerts := fetchResolvedAlerts(esClient, service2Key)
+					Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected resolved alert for service-2 on host %s", host))
+				}
+			}
+
+			// Finally delete Service-3 (Grouped)
+			deleteMetricsForService(esClient, "service-3")
+			executeRuleAndSaveAlerts(esClient, rule)
+			// assert that all alerts incuding parents are resolved
+			for host := range parentsByHost {
+				parent := parentsByHost[host]
+				service3Key := fmt.Sprintf("cpu_breach_grouping_test_service-3-%s", host)
+
+				if parent.DedupKey == service3Key {
+					// Service-3 is Parent. It should now RESOLVE.
+					resolvedParents := fetchResolvedAlerts(esClient, service3Key)
+					Expect(resolvedParents).To(HaveLen(1), fmt.Sprintf("Expected Parent Service-3 to be resolved on host %s", host))
+				} else {
+					// Service-3 is Grouped. It should RESOLVE.
+					resolvedAlerts := fetchResolvedAlerts(esClient, service3Key)
+					Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected resolved alert for service-3 on host %s", host))
+				}
+			}
+		})
+	})
 })
 
 // --- Helper Functions ---
