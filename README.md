@@ -73,9 +73,14 @@ graph TD
     CreateParent --> Save
 ```
 
+## Demo
+
+![ArgusGo Demo](demo/argus-demo.mp4)
+
 ## Directory Structure
 
 *   **`cmd/`**: Contains the entry point for the application (e.g., `main.go`).
+*   **`demo/`**: Contains demo assets (videos/GIFs).
 *   **`internal/`**: Core application logic.
     *   `alert/`: Logic for evaluating rules, saving alerts, and handling deduplication/grouping.
     *   `es/`: Elasticsearch client wrapper.

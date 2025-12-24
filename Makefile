@@ -3,7 +3,7 @@
 setup-devenv:
 	docker compose up -d
 
-teardown-devenv:
+destroy-devenv:
 	docker compose down
 
 setup-index:

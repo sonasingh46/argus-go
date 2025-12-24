@@ -100,12 +100,13 @@ func fetchMetrics() []map[string]interface{} {
 		},
 
 		/*
+			- without grouping rules there will be total 5 alerts as the rest will be deduped.
 			- since the grouping is bases on host and host is same for all above alerts.
 			- There will be only 1 parent alert and rest all will be grouped under it.
 			- Note that the total alerts that will be generated wiil be:
-			   - 5 alerts for service-1 to service-5 (1 each) as the dedup key is based on service value.
-			   - Know that if two alerts have the same dedup key, they just get updated.
-			   - Out of 5 1 will be parent type and 4 will be grouped type.
+			- 5 alerts for service-1 to service-5 (1 each) as the dedup key is based on service value.
+			- Know that if two alerts have the same dedup key, they just get updated.
+			- Out of 5 1 will be parent type and 4 will be grouped type.
 		*/
 	}
 }
