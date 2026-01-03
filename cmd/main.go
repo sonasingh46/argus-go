@@ -7,6 +7,7 @@ import (
 	"argus-go/internal/alert"
 	"argus-go/internal/banner"
 	"argus-go/internal/es"
+	"argus-go/internal/server"
 	"argus-go/schema"
 )
 
@@ -14,6 +15,14 @@ import (
 func main() {
 	banner.Print()
 	esClient := es.New([]string{"http://localhost:9200"})
+
+	// Start the health check server in a goroutine
+	go func() {
+		fmt.Println("[ArgusGo] 🌐 Starting health server on :8080")
+		if err := server.StartServer(":8080"); err != nil {
+			fmt.Printf("[ArgusGo] ❌ Health server error: %v\n", err)
+		}
+	}()
 
 	for {
 		runScanCycle(esClient)
