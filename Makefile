@@ -1,32 +1,66 @@
-.PHONY: setup-index clean-index seed-rules alert-rules ingest-metrics grouping-rules run it setup-devenv teardown-devenv
+.PHONY: build run test test-unit test-integration clean fmt lint help
 
-setup-devenv:
-	docker compose up -d
+# Default target
+all: build
 
-destroy-devenv:
-	docker compose down
+# Build the application
+build:
+	go build -o bin/argus ./cmd/argus
 
-setup-index:
-	go run scripts/setup_indices.go
-
-clean-index:
-	go run scripts/cleanup_indices.go
-
-seed-rules:
-	go run scripts/example_esquery_alert_rules.go
-
-alert-rules:
-	go run scripts/example_esquery_alert_rules.go
-
-ingest-metrics:
-	go run scripts/ingest_metrics.go
-
-grouping-rules:
-	go run scripts/create_grouping_rules.go
-
+# Run the application
 run:
-	go run cmd/main.go
+	go run ./cmd/argus -config config/config.yaml
 
-it:
+# Run all tests
+test: test-unit test-integration
+
+# Run unit tests
+test-unit:
+	go test -v -race ./internal/...
+
+# Run integration tests
+test-integration:
 	go test -v -count=1 ./integration/...
 
+# Shorthand for integration tests (backward compatibility)
+it: test-integration
+
+# Clean build artifacts
+clean:
+	rm -rf bin/
+	go clean
+
+# Format code
+fmt:
+	go fmt ./...
+
+# Run linter (requires golangci-lint)
+lint:
+	golangci-lint run ./...
+
+# Install dependencies
+deps:
+	go mod download
+	go mod tidy
+
+# Generate test coverage report
+coverage:
+	go test -coverprofile=coverage.out ./internal/...
+	go tool cover -html=coverage.out -o coverage.html
+
+# Help
+help:
+	@echo "ArgusGo Makefile commands:"
+	@echo ""
+	@echo "  build           - Build the application binary"
+	@echo "  run             - Run the application"
+	@echo "  test            - Run all tests (unit + integration)"
+	@echo "  test-unit       - Run unit tests only"
+	@echo "  test-integration- Run integration tests only"
+	@echo "  it              - Alias for test-integration"
+	@echo "  clean           - Clean build artifacts"
+	@echo "  fmt             - Format code"
+	@echo "  lint            - Run linter"
+	@echo "  deps            - Download and tidy dependencies"
+	@echo "  coverage        - Generate test coverage report"
+	@echo "  help            - Show this help message"
