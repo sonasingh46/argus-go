@@ -104,26 +104,23 @@ func (s *Server) registerRoutes() {
 	v1.Post("/events", s.ingestHandler.IngestEvent)
 
 	// Event Manager CRUD
-	eventManagers := v1.Group("/event-managers")
-	eventManagers.Post("/", s.eventManagerHandler.Create)
-	eventManagers.Get("/", s.eventManagerHandler.List)
-	eventManagers.Get("/:id", s.eventManagerHandler.GetByID)
-	eventManagers.Put("/:id", s.eventManagerHandler.Update)
-	eventManagers.Delete("/:id", s.eventManagerHandler.Delete)
+	v1.Post("/event-managers", s.eventManagerHandler.Create)
+	v1.Get("/event-managers", s.eventManagerHandler.List)
+	v1.Get("/event-managers/:id", s.eventManagerHandler.GetByID)
+	v1.Put("/event-managers/:id", s.eventManagerHandler.Update)
+	v1.Delete("/event-managers/:id", s.eventManagerHandler.Delete)
 
 	// Grouping Rules CRUD
-	groupingRules := v1.Group("/grouping-rules")
-	groupingRules.Post("/", s.groupingRuleHandler.Create)
-	groupingRules.Get("/", s.groupingRuleHandler.List)
-	groupingRules.Get("/:id", s.groupingRuleHandler.GetByID)
-	groupingRules.Put("/:id", s.groupingRuleHandler.Update)
-	groupingRules.Delete("/:id", s.groupingRuleHandler.Delete)
+	v1.Post("/grouping-rules", s.groupingRuleHandler.Create)
+	v1.Get("/grouping-rules", s.groupingRuleHandler.List)
+	v1.Get("/grouping-rules/:id", s.groupingRuleHandler.GetByID)
+	v1.Put("/grouping-rules/:id", s.groupingRuleHandler.Update)
+	v1.Delete("/grouping-rules/:id", s.groupingRuleHandler.Delete)
 
 	// Alerts (read-only for MVP)
-	alerts := v1.Group("/alerts")
-	alerts.Get("/", s.alertHandler.List)
-	alerts.Get("/:dedupKey", s.alertHandler.GetByDedupKey)
-	alerts.Get("/:dedupKey/children", s.alertHandler.GetChildren)
+	v1.Get("/alerts", s.alertHandler.List)
+	v1.Get("/alerts/:dedupKey", s.alertHandler.GetByDedupKey)
+	v1.Get("/alerts/:dedupKey/children", s.alertHandler.GetChildren)
 }
 
 // healthCheck returns the health status of the service.
