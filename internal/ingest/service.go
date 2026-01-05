@@ -25,10 +25,10 @@ import (
 // - Computing partition keys for ordered processing
 // - Publishing events to the message queue
 type Service struct {
-	producer            queue.Producer
-	eventManagerRepo    store.EventManagerRepository
-	groupingRuleRepo    store.GroupingRuleRepository
-	logger              *slog.Logger
+	producer         queue.Producer
+	eventManagerRepo store.EventManagerRepository
+	groupingRuleRepo store.GroupingRuleRepository
+	logger           *slog.Logger
 
 	// eventManagerCache provides fast lookups for event managers.
 	// In production, this would be a proper cache with TTL and invalidation.

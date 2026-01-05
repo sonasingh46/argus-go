@@ -39,9 +39,9 @@ type NotificationConfig struct {
 
 // Validation errors for EventManager.
 var (
-	ErrEmptyEventManagerName    = errors.New("name is required")
-	ErrEmptyGroupingRuleID      = errors.New("grouping_rule_id is required")
-	ErrEventManagerNotFound     = errors.New("event manager not found")
+	ErrEmptyEventManagerName     = errors.New("name is required")
+	ErrEmptyGroupingRuleID       = errors.New("grouping_rule_id is required")
+	ErrEventManagerNotFound      = errors.New("event manager not found")
 	ErrEventManagerAlreadyExists = errors.New("event manager already exists")
 )
 
