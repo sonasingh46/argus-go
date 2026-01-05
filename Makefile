@@ -1,4 +1,4 @@
-.PHONY: build run test test-unit test-integration clean fmt check-fmt lint help
+.PHONY: build run test test-unit test-integration clean fmt check-fmt lint security-scan help
 
 # Default target
 all: build
@@ -42,6 +42,10 @@ check-fmt:
 lint:
 	golangci-lint run ./...
 
+# Run security scan (requires gosec)
+security-scan:
+	gosec ./...
+
 # Install dependencies
 deps:
 	go mod download
@@ -66,6 +70,7 @@ help:
 	@echo "  fmt             - Format code"
 	@echo "  check-fmt       - Check code formatting (CI)"
 	@echo "  lint            - Run linter"
+	@echo "  security-scan   - Run security scan (gosec)"
 	@echo "  deps            - Download and tidy dependencies"
 	@echo "  coverage        - Generate test coverage report"
 	@echo "  help            - Show this help message"
