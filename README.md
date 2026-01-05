@@ -1,169 +1,379 @@
-# ArgusGo - Alert Grouping & Deduplication PoC
+# ArgusGo - High-Throughput Alert Ingestion & Grouping Service
 
-**ArgusGo** is a Proof of Concept (PoC) project designed to demonstrate advanced alert management capabilities, specifically focusing on **alert deduplication** and **alert grouping**.
+**ArgusGo** is a high-throughput alert ingestion and grouping service designed to receive millions of events, apply grouping logic based on configurable rules, and manage alert lifecycles.
 
-It continuously scans ingested metrics against defined alert and grouping rules, and generates alerts and saves them by applying deduplication and grouping logic to minimize alert noise and improve incident management.
+This is the **MVP-1** implementation using in-memory storage, designed to be easily pluggable with production infrastructure (Kafka, Redis, PostgreSQL).
 
-While the project includes an end-to-end flow—from ingesting metrics to evaluating rules and generating alerts—its primary purpose is to showcase how alerts can be intelligently managed to reduce noise and group related incidents.
+> **Note:** This project is in active development and is not ready for production use.
 
-**Potential as a Downstream Tool:**
-This project can be adapted to act as a downstream processor that simply ingests alerts by exposing APIs rather than doing the continuous scan. Its main job would be to apply **Grouping Rules** to organize alerts and send notifications, significantly reducing noise. This can be done without relying on the project's current deduplication and alert generation logic (using `dedup_key`) which exists for the purpose of experimentation.
+## Architecture Overview
 
-## ⚠️ Disclaimer: Not Production Grade
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              ArgusGo Architecture                               │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
-**Please Note:**
-*   This project is a **Proof of Concept (PoC)** and is **NOT intended for production use**.
-*   It was developed in a short timeframe (a couple of days) with the assistance of Large Language Models (LLMs) for ideation and coding.
-*   **Scalability**: The current implementation is **not scalable**. It processes alerts and rules sequentially and is not designed to handle large volume of data.
-*   **Reliability**: Error handling and edge cases may not be fully covered.
-
-## Demo
-
-![ArgusGo Demo](demo/argus-demo.mp4)
-
-## Features
-
-### 1. Alert Deduplication
-ArgusGo prevents alert storms by deduplicating alerts based on configurable keys.
-*   **Mechanism**: Uses a `dedup_key` generated from specific fields (e.g., `host`, `service`) found in the ingested data (metrics, logs, or other service telemetry). Check `scripts/example_esquery_alert_rules.go` to see how deduplication rules are configured on the alert rule itself.
-*   **Behavior**:
-    *   **Active Alerts**: If an alert with the same `dedup_key` is already `ACTIVE`, the system updates the existing alert (e.g., increments a trigger count) instead of creating a new one. There can be **at most one** `ACTIVE` alert for a given `dedup_key`.
-    *   **Resolved Alerts**: There can be multiple `RESOLVED` alerts with the same `dedup_key` (representing historical incidents).
-    *   **Re-activation**: If an alert was previously `RESOLVED` and the condition is met again, a **new** alert document is created. The system does *not* reopen the old resolved alert.
-    *   **Coexistence**: It is valid to have multiple `RESOLVED` alerts and one `ACTIVE` alert simultaneously for the same `dedup_key`.
-
-### 2. Alert Grouping
-Related alerts can be grouped under a single "Parent" alert to provide better context and reduce clutter.
-*   **Mechanism**: Uses `Grouping Rules` to define relationships (e.g., group by `host` or `rule_id` within a time window). Check `scripts/create_grouping_rules.go` for examples.
-*   **Behavior**:
-    *   **Parent Alert**: Represents the group.
-    *   **Grouped Alerts**: Child alerts that are linked to the parent.
-    *   When a new alert matches a grouping rule, it is added to the `grouped_alerts` list of the parent alert instead of standing alone.
-
-### 3. Alert Lifecycle
-Alerts transition through states based on the underlying metrics:
-*   **ACTIVE**: The condition (e.g., CPU > 90%) is currently met.
-*   **RESOLVED**: The condition is no longer met. The system automatically resolves alerts when the metric falls below the threshold.
-
-> **Note**: A transition from **ACTIVE** to **RESOLVED** does not happen on the same alert instance. Instead, a new alert instance is created to represent the resolved state.
-
-## Workflow Diagram
-
-```mermaid
-graph TD
-    User[User/Script] -->|Ingest Alert Rules, Grouping Rules, Metrics| ES[(Elasticsearch)]
-    
-    subgraph ArgusGo Engine
-        Start[Start Scan Cycle] --> FetchRules[Fetch Alert Rules]
-        FetchRules --> QueryES[Query Index Specified in Alert Rule]
-        QueryES --> CheckThreshold{Threshold Breached?}
-        
-        CheckThreshold -->|No| Resolve[Resolve Existing Alerts]
-        CheckThreshold -->|Yes| Dedup[Generate Dedup Key Based on Dedup Rules]
-        
-        Dedup --> CheckActive{Active Alert With the Dedeup Key Exists?}
-        CheckActive -->|Yes| Update[Update Trigger Count]
-        
-        CheckActive -->|No| Grouping{Matches Grouping Rule?}
-        Grouping -->|Yes| CreateGrouped[Create Grouped Alert]
-        CreateGrouped --> LinkParent[Link to Parent Alert]
-        
-        Grouping -->|No| CreateParent[Create Parent Alert]
-    end
-    
-    Resolve --> Save[(Save to Alerts Index)]
-    Update --> Save
-    LinkParent --> Save
-    CreateParent --> Save
+                              ┌───────────────────┐
+                              │   HTTP Clients    │
+                              │  (POST /v1/events)│
+                              └─────────┬─────────┘
+                                        │
+                                        ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                              HTTP Server (Fiber)                              │
+│  ┌─────────────┐ ┌──────────────────┐ ┌─────────────────┐ ┌───────────────┐  │
+│  │   Ingest    │ │  Event Manager   │ │  Grouping Rule  │ │    Alert      │  │
+│  │   Handler   │ │     Handler      │ │     Handler     │ │   Handler     │  │
+│  └──────┬──────┘ └──────────────────┘ └─────────────────┘ └───────────────┘  │
+└─────────┼─────────────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────┐
+│   Ingest Service    │
+│  ┌───────────────┐  │
+│  │  Validate     │  │
+│  │  Enrich       │  │
+│  │  Route        │  │
+│  └───────┬───────┘  │
+└──────────┼──────────┘
+           │
+           ▼
+┌─────────────────────┐       ┌─────────────────────┐
+│   Message Queue     │       │  Processor Service  │
+│   (In-Memory/Kafka) │──────▶│  ┌───────────────┐  │
+│                     │       │  │ Group Events  │  │
+└─────────────────────┘       │  │ Manage State  │  │
+                              │  │ Create Alerts │  │
+                              │  └───────┬───────┘  │
+                              └──────────┼──────────┘
+                                         │
+          ┌──────────────────────────────┼──────────────────────────────┐
+          │                              │                              │
+          ▼                              ▼                              ▼
+┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+│    State Store      │    │   Alert Repository  │    │ Notification Service│
+│  (In-Memory/Redis)  │    │ (In-Memory/Postgres)│    │      (Stubbed)      │
+└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
 ```
 
+## Data Flow
 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as HTTP API
+    participant Ingest as Ingest Service
+    participant Queue as Message Queue
+    participant Processor as Processor Service
+    participant State as State Store
+    participant DB as Alert Repository
 
-## Directory Structure
+    Client->>API: POST /v1/events
+    API->>Ingest: IngestEvent(event)
+    Ingest->>Ingest: Validate & Enrich
+    Ingest->>Ingest: Extract Grouping Value
+    Ingest->>Queue: Publish(enrichedEvent)
+    Queue-->>API: Ack
+    API-->>Client: 202 Accepted
 
-*   **`cmd/`**: Contains the entry point for the application (e.g., `main.go`).
-*   **`demo/`**: Contains demo assets (videos/GIFs).
-*   **`internal/`**: Core application logic.
-    *   `alert/`: Logic for evaluating rules, saving alerts, and handling deduplication/grouping.
-    *   `es/`: Elasticsearch client wrapper.
-    *   `banner/`: CLI banner.
-*   **`schema/`**: Go struct definitions for Alerts, Rules, and Metrics.
-*   **`scripts/`**: Utility scripts for setting up the environment and running scenarios.
-    *   `setup_indices.go`: Creates necessary ES indices.
-    *   `cleanup_indices.go`: Deletes indices.
-    *   `ingest_metrics.go`: Simulates metric ingestion.
-    *   `example_esquery_alert_rules.go`: Seeds alert rules.
-    *   `create_grouping_rules.go`: Seeds grouping rules.
-*   **`integration/`**: Integration tests ensuring the end-to-end flow works as expected.
-*   **`instructions/`**: Miscellaneous build or setup instructions for LLMs.
-*   **`Makefile`**: Commands to automate build, run, and test tasks.
+    Queue->>Processor: Consume(event)
+    Processor->>State: GetParent(groupingValue)
+
+    alt Parent Exists (within time window)
+        Processor->>State: CreateChildAlert
+        Processor->>State: AddChild(parentKey, childKey)
+    else No Parent
+        Processor->>State: CreateParentAlert
+        Processor->>State: SetParent(groupingValue, TTL)
+    end
+
+    Processor->>DB: Persist(alert)
+```
+
+## Key Concepts
+
+### Event Manager
+A namespace/tenant abstraction. Each team creates an Event Manager that links to a Grouping Rule, allowing isolated alert management per team or service.
+
+### Grouping Rule
+Defines how alerts are grouped together:
+- **`grouping_key`**: The event field to group by (e.g., `"class"`)
+- **`time_window_minutes`**: How long a parent alert accepts new children
+
+### Alert Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Alert Lifecycle                          │
+└─────────────────────────────────────────────────────────────────┘
+
+  First Event (unique grouping value)
+           │
+           ▼
+    ┌──────────────┐
+    │ Parent Alert │ ◄──── Receives notifications
+    │   (active)   │
+    └──────┬───────┘
+           │
+           │ Subsequent events (same grouping value, within time window)
+           │
+           ├────────────────┬────────────────┐
+           ▼                ▼                ▼
+    ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+    │ Child Alert  │ │ Child Alert  │ │ Child Alert  │
+    │   (active)   │ │   (active)   │ │   (active)   │
+    └──────────────┘ └──────────────┘ └──────────────┘
+
+  Resolution Rules:
+  • Child alerts can be resolved independently
+  • Parent alerts resolve ONLY when ALL children are resolved
+  • If parent receives resolve while children active → marked as "resolve_requested"
+```
+
+### Alert States
+| State | Description |
+|-------|-------------|
+| `active` | Alert condition is present |
+| `resolved` | Alert has been resolved |
+
+### Alert Types
+| Type | Description |
+|------|-------------|
+| `parent` | Root alert that groups children together |
+| `child` | Alert grouped under a parent |
+
+## API Endpoints
+
+### Event Ingestion
+```http
+POST /v1/events
+Content-Type: application/json
+
+{
+    "event_manager_id": "team-payments",
+    "summary": "High CPU usage on payment-service-01",
+    "severity": "high",
+    "action": "trigger",
+    "class": "infrastructure",
+    "dedupKey": "payment-service-01:cpu-high"
+}
+```
+
+### Event Manager CRUD
+```http
+POST   /v1/event-managers      # Create event manager
+GET    /v1/event-managers      # List all event managers
+GET    /v1/event-managers/:id  # Get event manager by ID
+PUT    /v1/event-managers/:id  # Update event manager
+DELETE /v1/event-managers/:id  # Delete event manager
+```
+
+### Grouping Rules CRUD
+```http
+POST   /v1/grouping-rules      # Create grouping rule
+GET    /v1/grouping-rules      # List all grouping rules
+GET    /v1/grouping-rules/:id  # Get grouping rule by ID
+PUT    /v1/grouping-rules/:id  # Update grouping rule
+DELETE /v1/grouping-rules/:id  # Delete grouping rule
+```
+
+### Alerts (Read-only)
+```http
+GET /v1/alerts                      # List all alerts
+GET /v1/alerts/:dedupKey            # Get alert by dedup key
+GET /v1/alerts/:dedupKey/children   # Get children of a parent alert
+```
+
+### Health Check
+```http
+GET /healthz
+```
+
+## Project Structure
+
+```
+argus-go/
+├── cmd/argus/
+│   └── main.go                 # Application entry point
+├── config/
+│   └── config.yaml             # Configuration file
+├── internal/
+│   ├── api/                    # HTTP handlers (Fiber)
+│   │   ├── server.go           # Server setup and middleware
+│   │   ├── ingest_handler.go   # Event ingestion endpoint
+│   │   ├── event_manager_handler.go
+│   │   ├── grouping_rule_handler.go
+│   │   └── alert_handler.go
+│   ├── config/                 # YAML configuration loading
+│   ├── domain/                 # Core business entities
+│   │   ├── event.go            # Event model and validation
+│   │   ├── alert.go            # Alert model (parent/child, status)
+│   │   ├── event_manager.go    # Event Manager model
+│   │   └── grouping_rule.go    # Grouping Rule model
+│   ├── ingest/                 # Event ingestion service
+│   │   └── service.go          # Validates, enriches, publishes
+│   ├── processor/              # Alert processing service
+│   │   └── service.go          # Grouping logic, state management
+│   ├── queue/                  # Message queue abstraction
+│   │   ├── queue.go            # Producer/Consumer interfaces
+│   │   └── memory/             # In-memory implementation
+│   ├── store/                  # Storage abstractions
+│   │   ├── state_store.go      # Redis-like state store interface
+│   │   ├── repository.go       # DB repository interfaces
+│   │   └── memory/             # In-memory implementations
+│   └── notification/           # Notification service (stubbed)
+└── integration/                # Ginkgo integration tests
+```
 
 ## Getting Started
 
 ### Prerequisites
-*   **Go**: 1.25+
-*   **Elasticsearch**: Running locally on `http://localhost:9200`.
-*   **Kibana** (Optional): For visualizing alerts.
+- Go 1.21+
 
-### Setup & Running Scenarios
+### Build & Run
 
-1.  **Start Elasticsearch**: Ensure your local ES instance is up. You can use the provided make command to start Elasticsearch and Kibana using Docker:
-    ```bash
-    make setup-devenv
-    ```
-
-2.  **Setup Indices**:
-    Initialize the Elasticsearch indices (`metrics`, `argusgo-alerts`, `esquery_alert`, `grouping_rules`).
-    ```bash
-    make setup-index
-    ```
-
-3.  **Seed Rules**:
-    Create sample alert rules and grouping rules.
-    ```bash
-    make alert-rules
-    make grouping-rules
-    ```
-
-4.  **Ingest Metrics & Generate Alerts**:
-    Run the script to ingest mock metrics.
-    ```bash
-    make ingest-metrics
-    ```
-    Then run the application to evaluate these metrics against the rules and generate alerts.
-    ```bash
-    make run
-    ```
-
-5.  **View Alerts**:
-    You can inspect the generated alerts in Kibana or by querying Elasticsearch directly:
-    ```bash
-    curl -X GET "localhost:9200/argusgo-alerts/_search?pretty"
-    ```
-    Look for fields like `alert_type` ("parent" vs "grouped") and `dedup_key`.
-
-6.  **Cleanup**:
-    To reset the environment:
-    ```bash
-    make clean-index
-    ```
-
-### Running Integration Tests
-
-The project includes a suite of integration tests using Ginkgo to verify the alert lifecycle, deduplication, and grouping logic.
-
-**Prerequisite:** Ensure the local development environment is up and running. If not, start it using:
 ```bash
-make setup-devenv
+# Build the binary
+make build
+
+# Run the application
+make run
+
+# Or run directly with Go
+go run ./cmd/argus -config config/config.yaml
 ```
 
-To run the tests:
+### Running Tests
 
 ```bash
+# Run all tests
+make test
+
+# Run unit tests only
+make test-unit
+
+# Run integration tests only
 make it
+
+# Generate test coverage report
+make coverage
 ```
 
-This command runs `go test -v ./integration/...`, which will:
-1.  Spin up fresh indices for each test.
-2.  Simulate metric ingestion.
-3.  Assert that alerts are created, deduplicated, grouped, and resolved correctly.
+### Available Make Commands
+
+| Command | Description |
+|---------|-------------|
+| `make build` | Build the application binary |
+| `make run` | Run the application |
+| `make test` | Run all tests (unit + integration) |
+| `make test-unit` | Run unit tests only |
+| `make it` | Run integration tests only |
+| `make fmt` | Format code |
+| `make lint` | Run linter (requires golangci-lint) |
+| `make clean` | Clean build artifacts |
+| `make deps` | Download and tidy dependencies |
+| `make coverage` | Generate test coverage report |
+
+## Quick Start Example
+
+```bash
+# 1. Start the server
+make run
+
+# 2. Create a grouping rule
+curl -X POST http://localhost:8080/v1/grouping-rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Group by class",
+    "grouping_key": "class",
+    "time_window_minutes": 30
+  }'
+# Returns: {"id": "rule-123", ...}
+
+# 3. Create an event manager
+curl -X POST http://localhost:8080/v1/event-managers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Payment Team",
+    "grouping_rule_id": "rule-123"
+  }'
+# Returns: {"id": "em-456", ...}
+
+# 4. Ingest events
+curl -X POST http://localhost:8080/v1/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_manager_id": "em-456",
+    "summary": "High CPU on server-1",
+    "severity": "high",
+    "action": "trigger",
+    "class": "infrastructure",
+    "dedupKey": "server-1:cpu"
+  }'
+# First event creates a PARENT alert
+
+curl -X POST http://localhost:8080/v1/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_manager_id": "em-456",
+    "summary": "High CPU on server-2",
+    "severity": "high",
+    "action": "trigger",
+    "class": "infrastructure",
+    "dedupKey": "server-2:cpu"
+  }'
+# Second event (same class, within time window) creates a CHILD alert
+
+# 5. View alerts
+curl http://localhost:8080/v1/alerts
+```
+
+## Design Principles
+
+- **Interface-based design**: All storage and queue components use interfaces for easy pluggability
+- **Clean architecture**: Separation of concerns between API, business logic, and infrastructure
+- **SOLID principles**: Single responsibility, dependency injection throughout
+- **Idiomatic Go**: Standard error handling, naming conventions, package organization
+- **High testability**: Unit tests for logic, integration tests for flows
+
+## Plugging in Production Infrastructure
+
+The in-memory implementations can be replaced with production systems:
+
+| Component | Interface | Production Implementation |
+|-----------|-----------|--------------------------|
+| Message Queue | `queue.Producer`, `queue.Consumer` | Kafka |
+| State Store | `store.StateStore` | Redis |
+| Repositories | `store.*Repository` | PostgreSQL |
+
+## Configuration
+
+Edit `config/config.yaml`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 5s
+  write_timeout: 10s
+  idle_timeout: 120s
+
+# Future: Kafka configuration
+kafka:
+  brokers: ["localhost:9092"]
+  topic: "argus-events"
+
+# Future: Redis configuration
+redis:
+  host: "localhost"
+  port: 6379
+
+# Future: PostgreSQL configuration
+postgres:
+  host: "localhost"
+  database: "argus"
+```
+
+## License
+
+MIT
