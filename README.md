@@ -4,6 +4,8 @@
 
 This is the **MVP-1** implementation using in-memory storage, designed to be easily pluggable with production infrastructure (Kafka, Redis, PostgreSQL).
 
+> **Note:** This project is in active development and is not ready for production use.
+
 ## Architecture Overview
 
 ```
