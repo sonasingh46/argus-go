@@ -1,4 +1,4 @@
-.PHONY: build run test test-unit test-integration clean fmt lint help
+.PHONY: build run test test-unit test-integration clean fmt check-fmt lint help
 
 # Default target
 all: build
@@ -34,6 +34,10 @@ clean:
 fmt:
 	go fmt ./...
 
+# Check formatting (fails if code is not formatted)
+check-fmt:
+	@test -z "$$(gofmt -l .)" || (echo "Code is not formatted. Run 'make fmt' to fix." && gofmt -l . && exit 1)
+
 # Run linter (requires golangci-lint)
 lint:
 	golangci-lint run ./...
@@ -60,6 +64,7 @@ help:
 	@echo "  it              - Alias for test-integration"
 	@echo "  clean           - Clean build artifacts"
 	@echo "  fmt             - Format code"
+	@echo "  check-fmt       - Check code formatting (CI)"
 	@echo "  lint            - Run linter"
 	@echo "  deps            - Download and tidy dependencies"
 	@echo "  coverage        - Generate test coverage report"
