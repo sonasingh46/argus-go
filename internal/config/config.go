@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -65,7 +66,9 @@ type LoggerConfig struct {
 // Load reads configuration from the specified YAML file path.
 // Returns an error if the file cannot be read or parsed.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	// Clean the path to prevent path traversal attacks
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
