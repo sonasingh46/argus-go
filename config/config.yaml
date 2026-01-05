@@ -1,0 +1,36 @@
+# ArgusGo Configuration
+# This file contains the default configuration for local development.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 10s
+  write_timeout: 10s
+  idle_timeout: 120s
+
+kafka:
+  brokers:
+    - "localhost:9092"
+  topic: "argus-events"
+  consumer_group: "argus-processor"
+  partition_count: 32
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+
+postgres:
+  host: "localhost"
+  port: 5432
+  user: "argus"
+  password: "argus"
+  database: "argus"
+  ssl_mode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+
+logger:
+  level: "info"      # debug, info, warn, error
+  format: "json"     # json or text

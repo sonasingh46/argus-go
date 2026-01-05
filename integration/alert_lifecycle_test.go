@@ -1,775 +1,589 @@
 package integration
 
 import (
-	"argus-go/internal/alert"
-	"argus-go/internal/es"
-	"argus-go/schema"
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"testing"
+	"log/slog"
+	"os"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/esapi"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"argus-go/internal/domain"
+	"argus-go/internal/notification"
+	"argus-go/internal/processor"
+	"argus-go/internal/queue"
+	"argus-go/internal/queue/memory"
+	"argus-go/internal/store"
+	storemem "argus-go/internal/store/memory"
 )
 
-const (
-	metricsIndex       = "metrics"
-	esqueryAlertIndex  = "esquery_alert"
-	alertsIndex        = "argusgo-alerts"
-	groupingRulesIndex = "grouping_rules"
-)
-
-func TestIT(t *testing.T) {
-	fmt.Println("Starting Integration Test Suite")
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Integration Test Suite")
-}
-
-var _ = Describe("Alert Lifecycle Integration", func() {
-	var esClient *es.Client
+var _ = Describe("Alert Lifecycle", func() {
+	var (
+		processorService *processor.Service
+		alertRepo        *storemem.AlertRepository
+		eventManagerRepo *storemem.EventManagerRepository
+		groupingRuleRepo *storemem.GroupingRuleRepository
+		stateStore       *storemem.StateStore
+		msgQueue         *memory.Queue
+		ctx              context.Context
+		cancel           context.CancelFunc
+	)
 
 	BeforeEach(func() {
-		esClient = es.New([]string{"http://localhost:9200"})
-		setupIndices(esClient)
+		// Setup test context
+		ctx, cancel = context.WithCancel(context.Background())
+
+		// Initialize logger (quiet for tests)
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+		// Initialize in-memory stores
+		stateStore = storemem.NewStateStore()
+		alertRepo = storemem.NewAlertRepository()
+		eventManagerRepo = storemem.NewEventManagerRepository()
+		groupingRuleRepo = storemem.NewGroupingRuleRepository()
+
+		// Initialize queue
+		msgQueue = memory.NewQueue(1000)
+
+		// Initialize notifier (stubbed)
+		notifier := notification.NewStubNotifier(logger)
+
+		// Initialize processor service
+		processorService = processor.NewService(
+			msgQueue,
+			stateStore,
+			alertRepo,
+			eventManagerRepo,
+			groupingRuleRepo,
+			notifier,
+			logger,
+		)
+
+		// Start processor in background
+		go func() {
+			_ = processorService.Start(ctx)
+		}()
+
+		// Give processor time to start
+		time.Sleep(10 * time.Millisecond)
 	})
 
 	AfterEach(func() {
-		cleanupIndices(esClient)
+		cancel()
+		_ = msgQueue.Close()
+		stateStore.Clear()
+		alertRepo.Clear()
+		eventManagerRepo.Clear()
+		groupingRuleRepo.Clear()
 	})
 
-	// Just create a single alert rule and ingest a singe metric
-	// Assert that alert is created when threshold is breached
-	// Then delete that metric that resolves the alert and assert alert is resolved
-	Context("When a simple threshold rule is configured", func() {
-		It("should create an alert when threshold is breached and resolve it when metric drops", func() {
-			// 1. Create Alert Rule
-			rule := schema.ESQueryAlertRule{
-				ID:         "high_cpu_test",
-				Name:       "High CPU Test",
-				Type:       "esquery",
-				Index:      metricsIndex,
-				Query:      `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
-				TimeWindow: "5m",
-				Threshold:  1,
-				DedupRules: &schema.DedupRules{
-					Key:    "cpu-alert",
-					Fields: []string{"host"},
-				},
-				Alert: schema.Alert{
-					Summary:  "High CPU detected",
-					Severity: "high",
-				},
+	Describe("Event Manager and Grouping Rule Setup", func() {
+		It("should create and retrieve an event manager", func() {
+			// Create a grouping rule first
+			rule := &domain.GroupingRule{
+				ID:                "rule-1",
+				Name:              "Test Rule",
+				GroupingKey:       "class",
+				TimeWindowMinutes: 5,
+				CreatedAt:         time.Now(),
 			}
-			createAlertRule(esClient, rule)
+			Expect(groupingRuleRepo.Create(ctx, rule)).To(Succeed())
 
-			// 2. Ingest High CPU Metric
-			ingestMetric(esClient, map[string]interface{}{
-				"timestamp": time.Now().UTC().Format(time.RFC3339),
-				"host":      "test-host-1",
-				"cpu_usage": 95.0,
+			// Create event manager
+			em := &domain.EventManager{
+				ID:             "em-1",
+				Name:           "Test EM",
+				GroupingRuleID: "rule-1",
+				CreatedAt:      time.Now(),
+			}
+
+			err := eventManagerRepo.Create(ctx, em)
+			Expect(err).NotTo(HaveOccurred())
+
+			retrieved, err := eventManagerRepo.GetByID(ctx, "em-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(retrieved.Name).To(Equal("Test EM"))
+		})
+
+		It("should create and retrieve a grouping rule", func() {
+			rule := &domain.GroupingRule{
+				ID:                "rule-1",
+				Name:              "Database Alert Rule",
+				GroupingKey:       "class",
+				TimeWindowMinutes: 10,
+				CreatedAt:         time.Now(),
+			}
+
+			err := groupingRuleRepo.Create(ctx, rule)
+			Expect(err).NotTo(HaveOccurred())
+
+			retrieved, err := groupingRuleRepo.GetByID(ctx, "rule-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(retrieved.Name).To(Equal("Database Alert Rule"))
+			Expect(retrieved.TimeWindowMinutes).To(Equal(10))
+		})
+	})
+
+	Describe("Alert Grouping", func() {
+		BeforeEach(func() {
+			// Setup grouping rule
+			rule := &domain.GroupingRule{
+				ID:                "rule-1",
+				Name:              "Test Rule",
+				GroupingKey:       "class",
+				TimeWindowMinutes: 5,
+				CreatedAt:         time.Now(),
+			}
+			Expect(groupingRuleRepo.Create(ctx, rule)).To(Succeed())
+
+			// Setup event manager
+			em := &domain.EventManager{
+				ID:             "em-1",
+				Name:           "Test EM",
+				GroupingRuleID: "rule-1",
+				CreatedAt:      time.Now(),
+			}
+			Expect(eventManagerRepo.Create(ctx, em)).To(Succeed())
+		})
+
+		It("should create a parent alert for the first event", func() {
+			event := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "Database connection failed",
+					Severity:       domain.SeverityHigh,
+					Action:         domain.ActionTrigger,
+					Class:          "database",
+					DedupKey:       "db-alert-1",
+				},
+				PartitionKey:  "partition-1",
+				GroupingValue: "database",
+				ReceivedAt:    time.Now(),
+			}
+
+			// Publish directly to queue (simulating ingest service)
+			payload, _ := json.Marshal(event)
+			err := msgQueue.Publish(ctx, &queue.Message{
+				Key:   []byte(event.PartitionKey),
+				Value: payload,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for processing
+			Eventually(func() int {
+				alerts, _ := alertRepo.List(ctx, domain.AlertFilter{})
+				return len(alerts)
+			}, 1*time.Second, 10*time.Millisecond).Should(Equal(1))
+
+			// Verify alert
+			alert, err := alertRepo.GetByDedupKey(ctx, "db-alert-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(alert.Type).To(Equal(domain.AlertTypeParent))
+			Expect(alert.Status).To(Equal(domain.AlertStatusActive))
+		})
+
+		It("should group subsequent events as children", func() {
+			// Create parent event
+			parentEvent := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "Parent alert",
+					Severity:       domain.SeverityHigh,
+					Action:         domain.ActionTrigger,
+					Class:          "database",
+					DedupKey:       "parent-1",
+				},
+				PartitionKey:  "partition-1",
+				GroupingValue: "database",
+				ReceivedAt:    time.Now(),
+			}
+
+			payload, _ := json.Marshal(parentEvent)
+			_ = msgQueue.Publish(ctx, &queue.Message{Key: []byte("p1"), Value: payload})
+
+			// Wait for parent to be created
+			Eventually(func() bool {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "parent-1")
+				return alert != nil
+			}, 1*time.Second).Should(BeTrue())
+
+			// Create child event
+			childEvent := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "Child alert",
+					Severity:       domain.SeverityMedium,
+					Action:         domain.ActionTrigger,
+					Class:          "database", // Same class = same group
+					DedupKey:       "child-1",
+				},
+				PartitionKey:  "partition-1",
+				GroupingValue: "database",
+				ReceivedAt:    time.Now(),
+			}
+
+			payload, _ = json.Marshal(childEvent)
+			_ = msgQueue.Publish(ctx, &queue.Message{Key: []byte("p1"), Value: payload})
+
+			// Wait for child to be created
+			Eventually(func() bool {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "child-1")
+				return alert != nil
+			}, 1*time.Second).Should(BeTrue())
+
+			// Verify child
+			child, _ := alertRepo.GetByDedupKey(ctx, "child-1")
+			Expect(child.Type).To(Equal(domain.AlertTypeChild))
+			Expect(child.ParentDedupKey).To(Equal("parent-1"))
+		})
+
+		It("should not group events with different grouping values", func() {
+			// Create first event with class "database"
+			event1 := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "Database alert",
+					Severity:       domain.SeverityHigh,
+					Action:         domain.ActionTrigger,
+					Class:          "database",
+					DedupKey:       "db-alert-1",
+				},
+				PartitionKey:  "partition-1",
+				GroupingValue: "database",
+				ReceivedAt:    time.Now(),
+			}
+
+			payload, _ := json.Marshal(event1)
+			_ = msgQueue.Publish(ctx, &queue.Message{Key: []byte("p1"), Value: payload})
+
+			// Wait for first alert
+			Eventually(func() bool {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "db-alert-1")
+				return alert != nil
+			}, 1*time.Second).Should(BeTrue())
+
+			// Create second event with different class
+			event2 := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "Web alert",
+					Severity:       domain.SeverityHigh,
+					Action:         domain.ActionTrigger,
+					Class:          "web", // Different class = different group
+					DedupKey:       "web-alert-1",
+				},
+				PartitionKey:  "partition-2",
+				GroupingValue: "web",
+				ReceivedAt:    time.Now(),
+			}
+
+			payload, _ = json.Marshal(event2)
+			_ = msgQueue.Publish(ctx, &queue.Message{Key: []byte("p2"), Value: payload})
+
+			// Wait for second alert
+			Eventually(func() bool {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "web-alert-1")
+				return alert != nil
+			}, 1*time.Second).Should(BeTrue())
+
+			// Both should be parent alerts
+			dbAlert, _ := alertRepo.GetByDedupKey(ctx, "db-alert-1")
+			Expect(dbAlert.Type).To(Equal(domain.AlertTypeParent))
+
+			webAlert, _ := alertRepo.GetByDedupKey(ctx, "web-alert-1")
+			Expect(webAlert.Type).To(Equal(domain.AlertTypeParent))
+		})
+	})
+
+	Describe("Alert Resolution", func() {
+		BeforeEach(func() {
+			// Setup grouping rule
+			rule := &domain.GroupingRule{
+				ID:                "rule-1",
+				Name:              "Test Rule",
+				GroupingKey:       "class",
+				TimeWindowMinutes: 5,
+				CreatedAt:         time.Now(),
+			}
+			Expect(groupingRuleRepo.Create(ctx, rule)).To(Succeed())
+
+			// Setup event manager
+			em := &domain.EventManager{
+				ID:             "em-1",
+				Name:           "Test EM",
+				GroupingRuleID: "rule-1",
+				CreatedAt:      time.Now(),
+			}
+			Expect(eventManagerRepo.Create(ctx, em)).To(Succeed())
+		})
+
+		It("should resolve a child alert independently", func() {
+			// Create parent and child manually
+			parent := &domain.Alert{
+				ID:             "parent-id",
+				DedupKey:       "parent-1",
+				EventManagerID: "em-1",
+				Type:           domain.AlertTypeParent,
+				Status:         domain.AlertStatusActive,
+				ChildCount:     1,
+				CreatedAt:      time.Now(),
+			}
+			_ = alertRepo.Create(ctx, parent)
+			_ = stateStore.SetAlert(ctx, &store.AlertState{
+				DedupKey:       "parent-1",
+				EventManagerID: "em-1",
+				Type:           "parent",
+				Status:         "active",
 			})
 
-			// 3. Execute Rule
-			executeRuleAndSaveAlerts(esClient, rule)
+			child := &domain.Alert{
+				ID:             "child-id",
+				DedupKey:       "child-1",
+				EventManagerID: "em-1",
+				Type:           domain.AlertTypeChild,
+				Status:         domain.AlertStatusActive,
+				ParentDedupKey: "parent-1",
+				CreatedAt:      time.Now(),
+			}
+			_ = alertRepo.Create(ctx, child)
+			_ = stateStore.SetAlert(ctx, &store.AlertState{
+				DedupKey:       "child-1",
+				EventManagerID: "em-1",
+				Type:           "child",
+				Status:         "active",
+				ParentDedupKey: "parent-1",
+			})
 
-			// 4. Verify Alert is ACTIVE
-			activeAlerts := fetchActiveAlerts(esClient, "high_cpu_test_cpu-alert-test-host-1")
-			Expect(activeAlerts).To(HaveLen(1))
-			Expect(activeAlerts[0].Status).To(Equal("ACTIVE"))
-			Expect(activeAlerts[0].Metadata.Host).To(Equal("test-host-1"))
+			// Send resolve event for child
+			resolveEvent := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Action:         domain.ActionResolve,
+					DedupKey:       "child-1",
+				},
+				ReceivedAt: time.Now(),
+			}
 
-			// 5. Simulate Resolution (delete old metrics)
-			deleteMetrics(esClient)
+			payload, _ := json.Marshal(resolveEvent)
+			_ = msgQueue.Publish(ctx, &queue.Message{Value: payload})
 
-			// 6. Execute Rule Again
-			executeRuleAndSaveAlerts(esClient, rule)
+			// Wait for resolution
+			Eventually(func() domain.AlertStatus {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "child-1")
+				if alert == nil {
+					return ""
+				}
+				return alert.Status
+			}, 1*time.Second).Should(Equal(domain.AlertStatusResolved))
 
-			// 7. Verify Alert is RESOLVED
-			resolvedAlerts := fetchResolvedAlerts(esClient, "high_cpu_test_cpu-alert-test-host-1")
-			Expect(resolvedAlerts).To(HaveLen(1))
-			Expect(resolvedAlerts[0].Status).To(Equal("RESOLVED"))
+			// Parent should still be active
+			parentAlert, _ := alertRepo.GetByDedupKey(ctx, "parent-1")
+			Expect(parentAlert.Status).To(Equal(domain.AlertStatusActive))
+		})
+
+		It("should resolve parent only after all children are resolved", func() {
+			// Create parent with pending resolve
+			parent := &domain.Alert{
+				ID:               "parent-id",
+				DedupKey:         "parent-1",
+				EventManagerID:   "em-1",
+				Type:             domain.AlertTypeParent,
+				Status:           domain.AlertStatusActive,
+				ChildCount:       1,
+				ResolveRequested: true,
+				CreatedAt:        time.Now(),
+			}
+			_ = alertRepo.Create(ctx, parent)
+			_ = stateStore.SetAlert(ctx, &store.AlertState{
+				DedupKey:         "parent-1",
+				EventManagerID:   "em-1",
+				Type:             "parent",
+				Status:           "active",
+				ResolveRequested: true,
+			})
+			_ = stateStore.SetPendingResolve(ctx, "parent-1", &store.PendingResolve{
+				RequestedAt:       time.Now(),
+				RemainingChildren: 1,
+			})
+
+			// Create active child
+			child := &domain.Alert{
+				ID:             "child-id",
+				DedupKey:       "child-1",
+				EventManagerID: "em-1",
+				Type:           domain.AlertTypeChild,
+				Status:         domain.AlertStatusActive,
+				ParentDedupKey: "parent-1",
+				CreatedAt:      time.Now(),
+			}
+			_ = alertRepo.Create(ctx, child)
+			_ = stateStore.SetAlert(ctx, &store.AlertState{
+				DedupKey:       "child-1",
+				EventManagerID: "em-1",
+				Type:           "child",
+				Status:         "active",
+				ParentDedupKey: "parent-1",
+			})
+			_ = stateStore.AddChild(ctx, "parent-1", "child-1")
+
+			// Resolve child
+			resolveEvent := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Action:         domain.ActionResolve,
+					DedupKey:       "child-1",
+				},
+				ReceivedAt: time.Now(),
+			}
+
+			payload, _ := json.Marshal(resolveEvent)
+			_ = msgQueue.Publish(ctx, &queue.Message{Value: payload})
+
+			// Both should be resolved now
+			Eventually(func() domain.AlertStatus {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "parent-1")
+				if alert == nil {
+					return ""
+				}
+				return alert.Status
+			}, 1*time.Second).Should(Equal(domain.AlertStatusResolved))
+		})
+
+		It("should defer parent resolution when children are still active", func() {
+			// Create parent and active child
+			parent := &domain.Alert{
+				ID:             "parent-id",
+				DedupKey:       "parent-1",
+				EventManagerID: "em-1",
+				Type:           domain.AlertTypeParent,
+				Status:         domain.AlertStatusActive,
+				ChildCount:     1,
+				CreatedAt:      time.Now(),
+			}
+			_ = alertRepo.Create(ctx, parent)
+			_ = stateStore.SetAlert(ctx, &store.AlertState{
+				DedupKey:       "parent-1",
+				EventManagerID: "em-1",
+				Type:           "parent",
+				Status:         "active",
+			})
+
+			child := &domain.Alert{
+				ID:             "child-id",
+				DedupKey:       "child-1",
+				EventManagerID: "em-1",
+				Type:           domain.AlertTypeChild,
+				Status:         domain.AlertStatusActive,
+				ParentDedupKey: "parent-1",
+				CreatedAt:      time.Now(),
+			}
+			_ = alertRepo.Create(ctx, child)
+			_ = stateStore.AddChild(ctx, "parent-1", "child-1")
+
+			// Try to resolve parent (should be deferred)
+			resolveEvent := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Action:         domain.ActionResolve,
+					DedupKey:       "parent-1",
+				},
+				ReceivedAt: time.Now(),
+			}
+
+			payload, _ := json.Marshal(resolveEvent)
+			_ = msgQueue.Publish(ctx, &queue.Message{Value: payload})
+
+			// Parent should have ResolveRequested=true but still be active
+			Eventually(func() bool {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "parent-1")
+				if alert == nil {
+					return false
+				}
+				return alert.ResolveRequested
+			}, 1*time.Second).Should(BeTrue())
+
+			parentAlert, _ := alertRepo.GetByDedupKey(ctx, "parent-1")
+			Expect(parentAlert.Status).To(Equal(domain.AlertStatusActive))
 		})
 	})
 
-	Context("When multiple services trigger alerts with deduplication based on service name", func() {
-		It("should deduplicate alerts per service and resolve them independently", func() {
-			services := []string{"service-1", "service-2", "service-3"}
-			var rules []schema.ESQueryAlertRule
-
-			// 1. Create 3 Alert Rules (one for each service)
-			for _, svc := range services {
-				rule := schema.ESQueryAlertRule{
-					ID:         "rule_" + svc,
-					Name:       "High CPU " + svc,
-					Type:       "esquery",
-					Index:      metricsIndex,
-					Query:      fmt.Sprintf(`{ "query": { "bool": { "must": [ { "term": { "service": "%s" } }, { "range": { "cpu_usage": { "gte": 90 } } } ] } } }`, svc),
-					TimeWindow: "5m",
-					Threshold:  1,
-					DedupRules: &schema.DedupRules{
-						Fields: []string{"service"},
-					},
-					Alert: schema.Alert{
-						Summary:  "High CPU detected for " + svc,
-						Severity: "high",
-					},
-				}
-				createAlertRule(esClient, rule)
-				rules = append(rules, rule)
+	Describe("Deduplication", func() {
+		BeforeEach(func() {
+			// Setup grouping rule
+			rule := &domain.GroupingRule{
+				ID:                "rule-1",
+				Name:              "Test Rule",
+				GroupingKey:       "class",
+				TimeWindowMinutes: 5,
+				CreatedAt:         time.Now(),
 			}
+			Expect(groupingRuleRepo.Create(ctx, rule)).To(Succeed())
 
-			// 2. Ingest 5 metrics for each service breaching the threshold
-			// Since the dedup key will be based on svc name 3 alerts should be created.
-			for _, svc := range services {
-				for i := 0; i < 5; i++ {
-					ingestMetric(esClient, map[string]interface{}{
-						"timestamp": time.Now().UTC().Format(time.RFC3339),
-						"host":      "prod-server-01",
-						"service":   svc,
-						"cpu_usage": 95.0 + float64(i),
-					})
-				}
+			// Setup event manager
+			em := &domain.EventManager{
+				ID:             "em-1",
+				Name:           "Test EM",
+				GroupingRuleID: "rule-1",
+				CreatedAt:      time.Now(),
 			}
-
-			// 3. Execute Rules and Assert only 3 alerts are created (one per service)
-			for _, rule := range rules {
-				executeRuleAndSaveAlerts(esClient, rule)
-			}
-
-			for _, svc := range services {
-				dedupKey := "rule_" + svc + "_" + svc
-				activeAlerts := fetchActiveAlerts(esClient, dedupKey)
-				Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for %s", svc))
-				Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-			}
-
-			resolvedServices := make(map[string]bool)
-			// Delete metrics for services in a loop and asert alerts resolving independently
-			for _, svc := range services {
-				deleteMetricsForService(esClient, svc)
-				resolvedServices[svc] = true
-
-				// Re-execute rules
-				for _, rule := range rules {
-					executeRuleAndSaveAlerts(esClient, rule)
-				}
-
-				// Assert alert for this service is RESOLVED
-				dedupKey := "rule_" + svc + "_" + svc
-				resolvedAlerts := fetchResolvedAlerts(esClient, dedupKey)
-				Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 resolved alert for %s", svc))
-
-				// Assert other alerts remain ACTIVE
-				for _, otherSvc := range services {
-					if resolvedServices[otherSvc] {
-						continue
-					}
-					otherDedupKey := "rule_" + otherSvc + "_" + otherSvc
-					activeAlerts := fetchActiveAlerts(esClient, otherDedupKey)
-					Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for %s", otherSvc))
-				}
-			}
+			Expect(eventManagerRepo.Create(ctx, em)).To(Succeed())
 		})
-	})
 
-	Context("When multiple services trigger alerts with deduplication based on host name", func() {
-		It("should deduplicate alerts per service and resolve them independently", func() {
-			services := []string{"service-1", "service-2", "service-3"}
-			var rules []schema.ESQueryAlertRule
-
-			// Create 1 Alert Rule for ALL services
-			rule := schema.ESQueryAlertRule{
-				ID:    "rule_high_cpu_all_services",
-				Name:  "High CPU Usage - All Services",
-				Type:  "esquery",
-				Index: metricsIndex,
-				// The query now only looks for the threshold, irrespective of service name
-				Query: `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
-
-				TimeWindow: "5m",
-				Threshold:  1,
-
-				DedupRules: &schema.DedupRules{
-					// By adding "service" here, ES will create a unique alert
-					// for every unique combination of host + service
-					Fields: []string{"host"},
+		It("should not create duplicate alerts for same dedupKey", func() {
+			// Create first event
+			event1 := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "First alert",
+					Severity:       domain.SeverityHigh,
+					Action:         domain.ActionTrigger,
+					Class:          "database",
+					DedupKey:       "alert-1",
 				},
+				PartitionKey:  "partition-1",
+				GroupingValue: "database",
+				ReceivedAt:    time.Now(),
+			}
 
-				Alert: schema.Alert{
-					Summary:  "High CPU detected on service",
-					Severity: "high",
+			payload, _ := json.Marshal(event1)
+			_ = msgQueue.Publish(ctx, &queue.Message{Key: []byte("p1"), Value: payload})
+
+			// Wait for first alert
+			Eventually(func() bool {
+				alert, _ := alertRepo.GetByDedupKey(ctx, "alert-1")
+				return alert != nil
+			}, 1*time.Second).Should(BeTrue())
+
+			// Send duplicate event with same dedupKey
+			event2 := &domain.InternalEvent{
+				Event: domain.Event{
+					EventManagerID: "em-1",
+					Summary:        "Duplicate alert",
+					Severity:       domain.SeverityHigh,
+					Action:         domain.ActionTrigger,
+					Class:          "database",
+					DedupKey:       "alert-1", // Same dedupKey
 				},
-			}
-			createAlertRule(esClient, rule)
-			rules = append(rules, rule)
-
-			// 2. Ingest 5 metrics for each service breaching the threshold
-			// Since the dedup key will be based on host name 1 alert should be created.
-			for _, svc := range services {
-				for i := 0; i < 5; i++ {
-					ingestMetric(esClient, map[string]interface{}{
-						"timestamp": time.Now().UTC().Format(time.RFC3339),
-						"host":      "prod-server-01",
-						"service":   svc,
-						"cpu_usage": 95.0 + float64(i),
-					})
-				}
+				PartitionKey:  "partition-1",
+				GroupingValue: "database",
+				ReceivedAt:    time.Now(),
 			}
 
-			// 3. Execute Rules and Assert only 1 alert is created (for the host)
-			for _, rule := range rules {
-				executeRuleAndSaveAlerts(esClient, rule)
-			}
+			payload, _ = json.Marshal(event2)
+			_ = msgQueue.Publish(ctx, &queue.Message{Key: []byte("p1"), Value: payload})
 
-			// Fetch all the active alerts to ensure only 1 alert exists
-			activeAlerts := fetchOnlyActiveAlerts(esClient)
-			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+			// Wait a bit for processing
+			time.Sleep(100 * time.Millisecond)
 
-			// Fetch by dedup key
-			dedupKey := "rule_high_cpu_all_services_prod-server-01"
-			activeAlerts = fetchActiveAlerts(esClient, dedupKey)
-			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
+			// Should still have only 1 alert
+			alerts, _ := alertRepo.List(ctx, domain.AlertFilter{})
+			Expect(len(alerts)).To(Equal(1))
 
-			// delete all the metrics for service-1 only
-			// alert should still be active as other services are breaching threshold on same host
-			deleteMetricsForService(esClient, "service-1")
-
-			// Re-execute rules
-			for _, rule := range rules {
-				executeRuleAndSaveAlerts(esClient, rule)
-			}
-
-			// the alert will stil be active as there are still metrics breaching threshold for service-1
-			// and other services.
-
-			// Fetch all the active alerts to ensure only 1 alert exists
-			activeAlerts = fetchOnlyActiveAlerts(esClient)
-			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-
-			// Fetch by dedup key
-			dedupKey = "rule_high_cpu_all_services_prod-server-01"
-			activeAlerts = fetchActiveAlerts(esClient, dedupKey)
-			Expect(activeAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-			Expect(activeAlerts[0].Metadata.TriggerCount).To(BeNumerically(">=", 1))
-
-			// Now delete all metrics for all services on that host to resolve the alert
-			deleteMetricsForService(esClient, "service-2")
-			deleteMetricsForService(esClient, "service-3")
-			// Re-execute rules
-			for _, rule := range rules {
-				executeRuleAndSaveAlerts(esClient, rule)
-			}
-
-			// Fetch all the active alerts to ensure only 0 alert exists
-			activeAlerts = fetchOnlyActiveAlerts(esClient)
-			Expect(activeAlerts).To(HaveLen(0), fmt.Sprintf("Expected 1 active alert for host %s", "prod-server-01"))
-
-			// Fetch by dedup key
-			dedupKey = "rule_high_cpu_all_services_prod-server-01"
-			resolvedAlerts := fetchResolvedAlerts(esClient, dedupKey)
-			Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected 1 resolved alert for host %s", "prod-server-01"))
-		})
-	})
-
-	Context("When grouping rules are configured", func() {
-		It("should group alerts based on grouping rules", func() {
-			// 1. Create Grouping Rule
-			// We group by rule_id so that all alerts from the same rule are grouped together
-			groupingRule := schema.GroupingRule{
-				ID:           "group_by_host",
-				Name:         "Group by Host",
-				GroupByField: "metadata.host",
-				TimeWindow:   "10m",
-			}
-
-			createGroupingRule(esClient, groupingRule)
-
-			// 2. Create Alert Rule
-			rule := schema.ESQueryAlertRule{
-				ID:         "cpu_breach_grouping_test",
-				Name:       "CPU Breach Grouping Test",
-				Type:       "esquery",
-				Index:      metricsIndex,
-				Query:      `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
-				TimeWindow: "5m",
-				Threshold:  1,
-				DedupRules: &schema.DedupRules{
-					// so that each host service alert are unique and does
-					// not get deduped
-					Fields: []string{"service", "host"},
-				},
-				Alert: schema.Alert{
-					Summary:  "High CPU detected",
-					Severity: "high",
-				},
-			}
-			createAlertRule(esClient, rule)
-			services := []string{"service-1", "service-2", "service-3"}
-			hosts := []string{"host-1", "host-2", "host-3"}
-
-			// 3. Ingest metrics and execute rule sequentially to generate multiple alerts
-			// Total 9 metrics (3 per host) will be ingested
-			for _, host := range hosts {
-				for _, svc := range services {
-					ingestMetric(esClient, map[string]interface{}{
-						"timestamp": time.Now().UTC().Format(time.RFC3339),
-						"host":      host,
-						"cpu_usage": 97.0,
-						"service":   svc,
-					})
-				}
-			}
-
-			executeRuleAndSaveAlerts(esClient, rule)
-
-			// 4. Assert that there are 9 active alerts
-			activeAlerts := fetchOnlyActiveAlerts(esClient)
-			Expect(activeAlerts).To(HaveLen(9))
-
-			// 5. Assert parent/grouped status
-			parentCount := 0
-			groupedCount := 0
-			parentsByHost := make(map[string]schema.Alert)
-
-			for _, a := range activeAlerts {
-				if a.AlertType == "parent" {
-					parentCount++
-					parentsByHost[a.Metadata.Host] = a
-				} else if a.AlertType == "grouped" {
-					groupedCount++
-				}
-			}
-
-			Expect(parentCount).To(Equal(3), "Expected exactly 3 parent alerts (1 per host)")
-			Expect(groupedCount).To(Equal(6), "Expected exactly 6 grouped alerts (2 per host)")
-			Expect(parentsByHost).To(HaveLen(3))
-
-			// 6. Assert parent has grouped alerts IDs
-			refreshIndex(esClient, alertsIndex)
-
-			for host, parent := range parentsByHost {
-				// Fetch parent again to get updated grouped_alerts
-				activeParent := fetchActiveAlerts(esClient, parent.DedupKey)
-				Expect(activeParent).To(HaveLen(1))
-				freshParent := activeParent[0]
-
-				Expect(freshParent.GroupedAlerts).To(HaveLen(2), fmt.Sprintf("Host %s parent should have 2 grouped alerts", host))
-			}
-		})
-	})
-
-	Context("When multiple alerts are grouped together", func() {
-		It("all the alerts including the parent and the grouped alert should be resolved for the parent to resolve", func() {
-			// 1. Create Grouping Rule
-			// We group by rule_id so that all alerts from the same rule are grouped together
-			groupingRule := schema.GroupingRule{
-				ID:           "group_by_host",
-				Name:         "Group by Host",
-				GroupByField: "metadata.host",
-				TimeWindow:   "10m",
-			}
-
-			createGroupingRule(esClient, groupingRule)
-
-			// 2. Create Alert Rule
-			rule := schema.ESQueryAlertRule{
-				ID:         "cpu_breach_grouping_test",
-				Name:       "CPU Breach Grouping Test",
-				Type:       "esquery",
-				Index:      metricsIndex,
-				Query:      `{ "query": { "range": { "cpu_usage": { "gte": 90 } } } }`,
-				TimeWindow: "5m",
-				Threshold:  1,
-				DedupRules: &schema.DedupRules{
-					// so that each host service alert are unique and does
-					// not get deduped
-					Fields: []string{"service", "host"},
-				},
-				Alert: schema.Alert{
-					Summary:  "High CPU detected",
-					Severity: "high",
-				},
-			}
-			createAlertRule(esClient, rule)
-			services := []string{"service-1", "service-2", "service-3"}
-			hosts := []string{"host-1", "host-2", "host-3"}
-
-			// 3. Ingest metrics and execute rule sequentially to generate multiple alerts
-			// Total 9 metrics (3 per host) will be ingested
-			for _, host := range hosts {
-				for _, svc := range services {
-					ingestMetric(esClient, map[string]interface{}{
-						"timestamp": time.Now().UTC().Format(time.RFC3339),
-						"host":      host,
-						"cpu_usage": 97.0,
-						"service":   svc,
-					})
-				}
-			}
-
-			executeRuleAndSaveAlerts(esClient, rule)
-
-			// 4. Assert that there are 9 active alerts
-			activeAlerts := fetchOnlyActiveAlerts(esClient)
-			Expect(activeAlerts).To(HaveLen(9))
-
-			// 5. Assert parent/grouped status
-			parentCount := 0
-			groupedCount := 0
-			parentsByHost := make(map[string]schema.Alert)
-
-			for _, a := range activeAlerts {
-				if a.AlertType == "parent" {
-					parentCount++
-					parentsByHost[a.Metadata.Host] = a
-				} else if a.AlertType == "grouped" {
-					groupedCount++
-				}
-			}
-
-			Expect(parentCount).To(Equal(3), "Expected exactly 3 parent alerts (1 per host)")
-			Expect(groupedCount).To(Equal(6), "Expected exactly 6 grouped alerts (2 per host)")
-			Expect(parentsByHost).To(HaveLen(3))
-
-			// 6. Assert parent has grouped alerts IDs
-			refreshIndex(esClient, alertsIndex)
-
-			for host, parent := range parentsByHost {
-				// Fetch parent again to get updated grouped_alerts
-				activeParent := fetchActiveAlerts(esClient, parent.DedupKey)
-				Expect(activeParent).To(HaveLen(1))
-				freshParent := activeParent[0]
-
-				Expect(freshParent.GroupedAlerts).To(HaveLen(2), fmt.Sprintf("Host %s parent should have 2 grouped alerts", host))
-			}
-
-			// search all the metrics for service-1 and delete them.
-			deleteMetricsForService(esClient, "service-1")
-			// re execute rule
-			executeRuleAndSaveAlerts(esClient, rule)
-			// Assert that service-1 behavior depends on whether it is parent or grouped
-			for host := range parentsByHost {
-				parent := parentsByHost[host]
-				service1Key := fmt.Sprintf("cpu_breach_grouping_test_service-1-%s", host)
-
-				if parent.DedupKey == service1Key {
-					// Service-1 is Parent. It should stay ACTIVE because other children are active.
-					activeParents := fetchActiveAlerts(esClient, service1Key)
-					Expect(activeParents).To(HaveLen(1), fmt.Sprintf("Expected Parent Service-1 to remain active on host %s", host))
-				} else {
-					// Service-1 is Grouped. It should RESOLVE.
-					resolvedAlerts := fetchResolvedAlerts(esClient, service1Key)
-					Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected resolved alert for service-1 on host %s", host))
-
-					// And the Parent (whoever it is) should stay ACTIVE.
-					activeParents := fetchActiveAlerts(esClient, parent.DedupKey)
-					Expect(activeParents).To(HaveLen(1), fmt.Sprintf("Expected Parent %s to remain active on host %s", parent.DedupKey, host))
-				}
-			}
-
-			// Now delete Service-2 (Grouped)
-			deleteMetricsForService(esClient, "service-2")
-			executeRuleAndSaveAlerts(esClient, rule)
-
-			for host := range parentsByHost {
-				parent := parentsByHost[host]
-				service2Key := fmt.Sprintf("cpu_breach_grouping_test_service-2-%s", host)
-
-				if parent.DedupKey == service2Key {
-					// Service-2 is Parent. It should stay ACTIVE.
-					activeParents := fetchActiveAlerts(esClient, service2Key)
-					Expect(activeParents).To(HaveLen(1), fmt.Sprintf("Expected Parent Service-2 to remain active on host %s", host))
-				} else {
-					// Service-2 is Grouped. It should RESOLVE.
-					resolvedAlerts := fetchResolvedAlerts(esClient, service2Key)
-					Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected resolved alert for service-2 on host %s", host))
-				}
-			}
-
-			// Finally delete Service-3 (Grouped)
-			deleteMetricsForService(esClient, "service-3")
-			executeRuleAndSaveAlerts(esClient, rule)
-			// assert that all alerts incuding parents are resolved
-			for host := range parentsByHost {
-				parent := parentsByHost[host]
-				service3Key := fmt.Sprintf("cpu_breach_grouping_test_service-3-%s", host)
-
-				if parent.DedupKey == service3Key {
-					// Service-3 is Parent. It should now RESOLVE.
-					resolvedParents := fetchResolvedAlerts(esClient, service3Key)
-					Expect(resolvedParents).To(HaveLen(1), fmt.Sprintf("Expected Parent Service-3 to be resolved on host %s", host))
-				} else {
-					// Service-3 is Grouped. It should RESOLVE.
-					resolvedAlerts := fetchResolvedAlerts(esClient, service3Key)
-					Expect(resolvedAlerts).To(HaveLen(1), fmt.Sprintf("Expected resolved alert for service-3 on host %s", host))
-				}
-			}
+			// Summary should be from first event
+			alert, _ := alertRepo.GetByDedupKey(ctx, "alert-1")
+			Expect(alert.Summary).To(Equal("First alert"))
 		})
 	})
 })
-
-// --- Helper Functions ---
-
-func setupIndices(client *es.Client) {
-	cleanupIndices(client)
-
-	createIndex(client, metricsIndex, `{
-		"mappings": {
-			"properties": {
-				"timestamp": { "type": "date" },
-				"service":   { "type": "keyword" },
-				"host":      { "type": "keyword" },
-				"cpu_usage": { "type": "double" }
-			}
-		}
-	}`)
-
-	createIndex(client, esqueryAlertIndex, `{
-		"mappings": {
-			"properties": {
-				"id":          { "type": "keyword" },
-				"name":        { "type": "text" },
-				"type":        { "type": "keyword" },
-				"index":       { "type": "keyword" },
-				"query":       { "type": "text" },
-				"time_window": { "type": "keyword" },
-				"threshold":   { "type": "integer" },
-				"dedup_rules": {
-					"properties": {
-						"key":    { "type": "keyword" },
-						"fields": { "type": "keyword" }
-					}
-				},
-				"alert": {
-					"properties": {
-						"summary":        { "type": "text" },
-						"severity":       { "type": "keyword" },
-						"status":         { "type": "keyword" },
-						"alert_type":     { "type": "keyword" },
-						"timestamp":      { "type": "date" },
-						"dedup_key":      { "type": "keyword" },
-						"grouped_alerts": { "type": "keyword" },
-						"metadata": {
-							"properties": {
-								"dependencies": { "type": "keyword" },
-								"host":         { "type": "keyword" },
-								"rule_id":      { "type": "keyword" },
-								"trigger_count": { "type": "integer" }
-							}
-						}
-					}
-				}
-			}
-		}
-	}`)
-
-	createIndex(client, alertsIndex, `{
-		"mappings": {
-			"properties": {
-				"summary":        { "type": "text" },
-				"severity":       { "type": "keyword" },
-				"status":         { "type": "keyword" },
-				"alert_type":     { "type": "keyword" },
-				"timestamp":      { "type": "date" },
-				"dedup_key":      { "type": "keyword" },
-				"grouped_alerts": { "type": "keyword" },
-				"metadata": {
-					"properties": {
-						"dependencies": { "type": "keyword" },
-						"host":         { "type": "keyword" },
-						"rule_id":      { "type": "keyword" },
-						"trigger_count": { "type": "integer" }
-					}
-				}
-			}
-		}
-	}`)
-
-	createIndex(client, groupingRulesIndex, `{
-		"mappings": {
-			"properties": {
-				"id":             { "type": "keyword" },
-				"name":           { "type": "text" },
-				"group_by_field": { "type": "keyword" },
-				"time_window":    { "type": "keyword" }
-			}
-		}
-	}`)
-}
-
-func cleanupIndices(client *es.Client) {
-	indices := []string{metricsIndex, esqueryAlertIndex, alertsIndex, groupingRulesIndex}
-	for _, idx := range indices {
-		req := esapi.IndicesDeleteRequest{Index: []string{idx}}
-		req.Do(context.Background(), client.ES)
-	}
-}
-
-func createIndex(client *es.Client, index, mapping string) {
-	req := esapi.IndicesCreateRequest{
-		Index: index,
-		Body:  bytes.NewReader([]byte(mapping)),
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-	Expect(res.IsError()).To(BeFalse(), fmt.Sprintf("Failed to create index %s: %s", index, res.String()))
-}
-
-func createAlertRule(client *es.Client, rule schema.ESQueryAlertRule) {
-	data, err := json.Marshal(rule)
-	Expect(err).NotTo(HaveOccurred())
-
-	req := esapi.IndexRequest{
-		Index:      esqueryAlertIndex,
-		DocumentID: rule.ID,
-		Body:       bytes.NewReader(data),
-		Refresh:    "true",
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-	Expect(res.IsError()).To(BeFalse())
-}
-
-func createGroupingRule(client *es.Client, rule schema.GroupingRule) {
-	data, err := json.Marshal(rule)
-	Expect(err).NotTo(HaveOccurred())
-
-	req := esapi.IndexRequest{
-		Index:      groupingRulesIndex,
-		DocumentID: rule.ID,
-		Body:       bytes.NewReader(data),
-		Refresh:    "true",
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-	Expect(res.IsError()).To(BeFalse())
-}
-
-func ingestMetric(client *es.Client, metric map[string]interface{}) {
-	data, err := json.Marshal(metric)
-	Expect(err).NotTo(HaveOccurred())
-
-	req := esapi.IndexRequest{
-		Index:   metricsIndex,
-		Body:    bytes.NewReader(data),
-		Refresh: "true",
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-	Expect(res.IsError()).To(BeFalse())
-}
-
-func executeRuleAndSaveAlerts(client *es.Client, rule schema.ESQueryAlertRule) {
-	alerts, err := alert.ExecuteESQueryAlertRule(client, rule)
-	Expect(err).NotTo(HaveOccurred())
-	for _, a := range alerts {
-		err := alert.SaveAlert(client, a)
-		Expect(err).NotTo(HaveOccurred())
-	}
-}
-
-func refreshIndex(client *es.Client, index string) {
-	req := esapi.IndicesRefreshRequest{
-		Index: []string{index},
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-}
-
-func fetchActiveAlerts(client *es.Client, dedupKey string) []schema.Alert {
-	query := map[string]interface{}{
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must": []interface{}{
-					map[string]interface{}{"term": map[string]interface{}{"dedup_key": dedupKey}},
-					map[string]interface{}{"term": map[string]interface{}{"status": "ACTIVE"}},
-				},
-			},
-		},
-	}
-	return searchAlerts(client, query)
-}
-
-func fetchOnlyActiveAlerts(client *es.Client) []schema.Alert {
-	query := map[string]interface{}{
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must": []interface{}{
-					map[string]interface{}{"term": map[string]interface{}{"status": "ACTIVE"}},
-				},
-			},
-		},
-	}
-	return searchAlerts(client, query)
-}
-
-func fetchResolvedAlerts(client *es.Client, dedupKey string) []schema.Alert {
-	query := map[string]interface{}{
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must": []interface{}{
-					map[string]interface{}{"term": map[string]interface{}{"dedup_key": dedupKey}},
-					map[string]interface{}{"term": map[string]interface{}{"status": "RESOLVED"}},
-				},
-			},
-		},
-	}
-	return searchAlerts(client, query)
-}
-
-func searchAlerts(client *es.Client, query map[string]interface{}) []schema.Alert {
-	res, err := client.Search(alertsIndex, query)
-	Expect(err).NotTo(HaveOccurred())
-
-	var alerts []schema.Alert
-	hitsObj := res["hits"].(map[string]interface{})
-	hits := hitsObj["hits"].([]interface{})
-
-	for _, h := range hits {
-		source := h.(map[string]interface{})["_source"].(map[string]interface{})
-		b, _ := json.Marshal(source)
-		var a schema.Alert
-		json.Unmarshal(b, &a)
-		alerts = append(alerts, a)
-	}
-	return alerts
-}
-
-func deleteMetrics(client *es.Client) {
-	refresh := true
-	req := esapi.DeleteByQueryRequest{
-		Index:   []string{metricsIndex},
-		Body:    bytes.NewReader([]byte(`{"query": {"match_all": {}}}`)),
-		Refresh: &refresh,
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-	Expect(res.IsError()).To(BeFalse())
-}
-
-func deleteMetricsForService(client *es.Client, service string) {
-	refresh := true
-	query := fmt.Sprintf(`{ "query": { "term": { "service": "%s" } } }`, service)
-	req := esapi.DeleteByQueryRequest{
-		Index:   []string{metricsIndex},
-		Body:    bytes.NewReader([]byte(query)),
-		Refresh: &refresh,
-	}
-	res, err := req.Do(context.Background(), client.ES)
-	Expect(err).NotTo(HaveOccurred())
-	defer res.Body.Close()
-	Expect(res.IsError()).To(BeFalse())
-}

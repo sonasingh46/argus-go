@@ -4,89 +4,188 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ArgusGo is a Proof of Concept (PoC) Go application for **alert deduplication and grouping**. It continuously scans ingested metrics against defined alert rules, generates alerts, and applies deduplication/grouping logic to reduce alert noise. This is NOT production-grade.
+ArgusGo is a high-throughput alert ingestion and grouping service. It receives millions of events, applies grouping logic based on configurable rules, and manages alert lifecycles. This is MVP-1 implementation with in-memory storage (designed to be easily pluggable with Kafka, Redis, and PostgreSQL).
+
+## Architecture
+
+The application uses a clean architecture with the following key components:
+
+```
+cmd/argus/main.go              # Application entry point
+internal/
+  api/                         # HTTP handlers and routing (Fiber)
+    server.go                  # Server setup and middleware
+    event_manager_handler.go   # Event Manager CRUD
+    grouping_rule_handler.go   # Grouping Rule CRUD
+    alert_handler.go           # Alerts (read-only)
+    ingest_handler.go          # Event ingestion endpoint
+  config/                      # YAML configuration loading
+  domain/                      # Core business entities
+    event.go                   # Event model and validation
+    alert.go                   # Alert model (parent/child, status)
+    event_manager.go           # Event Manager model
+    grouping_rule.go           # Grouping Rule model
+  ingest/                      # Event ingestion service
+    service.go                 # Validates, enriches, publishes to queue
+  processor/                   # Alert processing service
+    service.go                 # Grouping logic, state management
+  queue/                       # Message queue abstraction
+    queue.go                   # Producer/Consumer interfaces
+    memory/                    # In-memory queue implementation
+  store/                       # Storage abstractions
+    state_store.go             # Redis-like state store interface
+    repository.go              # DB repository interfaces
+    memory/                    # In-memory implementations
+  notification/                # Notification service (stubbed)
+config/config.yaml             # Configuration file
+integration/                   # Ginkgo integration tests
+```
 
 ## Build & Run Commands
 
 ```bash
-# Development environment (Docker: Elasticsearch + Kibana)
-make setup-devenv      # Start containers
-make destroy-devenv    # Stop containers
+# Build binary
+make build
 
-# Elasticsearch indices
-make setup-index       # Create indices with mappings
-make clean-index       # Delete all indices
+# Run application
+make run
 
-# Seed data
-make alert-rules       # Seed alert rules
-make grouping-rules    # Seed grouping rules
-make ingest-metrics    # Ingest test metrics
+# Run all tests
+make test
 
-# Application
-make run               # Start alert processing loop
+# Run unit tests only
+make test-unit
 
-# Testing (requires running Elasticsearch)
-make it                # Run integration tests
+# Run integration tests only
+make it
+
+# Format code
+make fmt
+
+# Clean build artifacts
+make clean
 ```
-
-**Typical development workflow:**
-```bash
-make setup-devenv && make setup-index && make alert-rules && make grouping-rules && make ingest-metrics
-make run  # In one terminal
-make it   # In another terminal (integration tests)
-```
-
-## Architecture
-
-```
-cmd/main.go                         # Entry point - infinite loop scanning alert rules
-internal/
-  alert/
-    esquery_alert.go                # Core execution logic, deduplication, grouping
-    fetch_alert_rules.go            # Fetch rules from ES
-    save_alerts.go                  # Persist alerts to ES
-  es/client.go                      # Elasticsearch client wrapper
-  server/health.go                  # Health endpoint (/healthz on :8080)
-schema/alert.go                     # Data models (ESQueryAlertRule, Alert, GroupingRule)
-integration/alert_lifecycle_test.go # Ginkgo integration tests
-scripts/                            # Index setup, cleanup, seeding utilities
-```
-
-## Elasticsearch Indices
-
-| Index | Purpose |
-|-------|---------|
-| `metrics` | Input data (CPU, memory, etc) |
-| `esquery_alert` | Alert rule definitions |
-| `argusgo-alerts` | Generated alerts |
-| `grouping_rules` | Rules for grouping alerts |
 
 ## Key Concepts
 
-**Dedup Key:** Format is `{ruleID}_{dedupRulesKey}_{field1}_{field2}...` - derived from fields in alert rule's `dedup_rules`. One active alert per dedup_key.
+### Event Manager
+A namespace/tenant abstraction. Each team creates an Event Manager that links to a Grouping Rule.
 
-**Alert States:** ACTIVE (condition met) or RESOLVED (condition no longer met).
+### Grouping Rule
+Defines how alerts are grouped:
+- `grouping_key`: Field to group by (e.g., "class")
+- `time_window_minutes`: How long a parent alert accepts children
 
-**Alert Grouping:** New alerts within a time window can be linked to a parent alert. Parent maintains `grouped_alerts` list of child dedup_keys. `alert_type` is "parent" or "grouped".
+### Alert Lifecycle
+1. First event with a unique grouping value → **Parent Alert**
+2. Subsequent events with same grouping value (within time window) → **Child Alert**
+3. Child alerts can be resolved independently
+4. Parent alerts resolve only when ALL children are resolved
 
-**Processing Loop:** Every 5 seconds, fetches rules from ES, executes each rule's query, groups hits by dedup_key, creates/updates/resolves alerts based on threshold matches.
+### Alert States
+- `active`: Alert condition is present
+- `resolved`: Alert has been resolved
+
+### Alert Types
+- `parent`: Root alert that groups children
+- `child`: Alert grouped under a parent
+
+## API Endpoints
+
+### Event Ingestion
+```
+POST /v1/events
+```
+
+### Event Manager CRUD
+```
+POST   /v1/event-managers
+GET    /v1/event-managers
+GET    /v1/event-managers/{id}
+PUT    /v1/event-managers/{id}
+DELETE /v1/event-managers/{id}
+```
+
+### Grouping Rules CRUD
+```
+POST   /v1/grouping-rules
+GET    /v1/grouping-rules
+GET    /v1/grouping-rules/{id}
+PUT    /v1/grouping-rules/{id}
+DELETE /v1/grouping-rules/{id}
+```
+
+### Alerts (Read-only)
+```
+GET    /v1/alerts
+GET    /v1/alerts/{dedupKey}
+GET    /v1/alerts/{dedupKey}/children
+```
+
+### Health Check
+```
+GET    /healthz
+```
+
+## Event Payload
+
+```json
+{
+    "event_manager_id": "string",
+    "summary": "string",
+    "severity": "high | medium | low",
+    "action": "trigger | resolve",
+    "class": "string",
+    "dedupKey": "string"
+}
+```
 
 ## Testing
 
-Uses Ginkgo v2 + Gomega. Integration tests require running Elasticsearch.
+Uses standard Go testing for unit tests and Ginkgo v2 + Gomega for integration tests.
 
 ```bash
-# Run single test file
-go test -v ./integration/...
+# Run single test
+go test -v ./internal/domain/... -run TestEvent_Validate
 
-# Run specific test
-go test -v ./integration/... -ginkgo.focus="test description"
+# Run specific Ginkgo test
+go test -v ./integration/... -ginkgo.focus="should create a parent alert"
 ```
 
-## Debugging
+## Design Principles
 
-```bash
-curl -X GET "localhost:9200/argusgo-alerts/_search?pretty"  # View alerts
-curl -X GET "localhost:9200/esquery_alert/_search?pretty"   # View rules
-curl http://localhost:8080/healthz                           # Health check
+- **Interface-based design**: All storage and queue components use interfaces for easy pluggability
+- **Small, focused functions**: Each function does one thing well
+- **SOLID principles**: Single responsibility, dependency injection
+- **Idiomatic Go**: Error handling, naming conventions, package organization
+- **Test coverage**: Unit tests for logic, integration tests for flows
+
+## Plugging in Real Implementations
+
+The in-memory implementations can be replaced with real ones:
+
+1. **Queue**: Implement `queue.Producer` and `queue.Consumer` interfaces for Kafka
+2. **State Store**: Implement `store.StateStore` interface for Redis
+3. **Repositories**: Implement `store.*Repository` interfaces for PostgreSQL
+
+## Configuration
+
+Edit `config/config.yaml`:
+
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+kafka:
+  brokers: ["localhost:9092"]
+  topic: "argus-events"
+
+redis:
+  host: "localhost"
+  port: 6379
+
+postgres:
+  host: "localhost"
+  database: "argus"
 ```
