@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"argus-go/internal/domain"
+	"argus-go/internal/metrics"
 	"argus-go/internal/notification"
 	"argus-go/internal/queue"
 	"argus-go/internal/store"
@@ -65,12 +66,19 @@ func (s *Service) Start(ctx context.Context) error {
 
 // handleMessage is the callback for processing each message from the queue.
 func (s *Service) handleMessage(ctx context.Context, msg *queue.Message) error {
+	processingStart := time.Now()
+
 	// Deserialize the internal event
 	var event domain.InternalEvent
 	if err := json.Unmarshal(msg.Value, &event); err != nil {
 		s.logger.Error("failed to deserialize event", "error", err)
 		// Return nil to avoid reprocessing malformed messages
 		return nil
+	}
+
+	// Track queue latency (time from ingest to processing)
+	if !event.ReceivedAt.IsZero() {
+		metrics.EventQueueLatency.Observe(time.Since(event.ReceivedAt).Seconds())
 	}
 
 	s.logger.Debug("processing event",
@@ -80,15 +88,26 @@ func (s *Service) handleMessage(ctx context.Context, msg *queue.Message) error {
 	)
 
 	// Route to appropriate handler based on action
+	var err error
 	switch event.Action {
 	case domain.ActionTrigger:
-		return s.handleTrigger(ctx, &event)
+		err = s.handleTrigger(ctx, &event)
 	case domain.ActionResolve:
-		return s.handleResolve(ctx, &event)
+		err = s.handleResolve(ctx, &event)
 	default:
 		s.logger.Warn("unknown action", "action", event.Action, "dedupKey", event.DedupKey)
 		return nil
 	}
+
+	// Track processing metrics
+	result := "success"
+	if err != nil {
+		result = "error"
+	}
+	metrics.EventsProcessedTotal.WithLabelValues(event.EventManagerID, string(event.Action), result).Inc()
+	metrics.EventProcessingLatency.Observe(time.Since(processingStart).Seconds())
+
+	return err
 }
 
 // handleTrigger processes a trigger action event.
@@ -200,6 +219,15 @@ func (s *Service) createParentAlert(
 		"eventManagerID", alert.EventManagerID,
 	)
 
+	// Track alert creation metrics
+	metrics.AlertsCreatedTotal.WithLabelValues(event.EventManagerID, "parent").Inc()
+	metrics.ActiveAlerts.WithLabelValues(event.EventManagerID, "parent").Inc()
+
+	// Track end-to-end latency from event ingestion to alert creation (key SLO metric)
+	if !event.ReceivedAt.IsZero() {
+		metrics.AlertCreationLatency.Observe(time.Since(event.ReceivedAt).Seconds())
+	}
+
 	// Send notification for new parent alert
 	s.notifier.NotifyNewParent(ctx, alert, em)
 
@@ -255,6 +283,15 @@ func (s *Service) createChildAlert(
 		"dedupKey", alert.DedupKey,
 		"parentDedupKey", parentState.DedupKey,
 	)
+
+	// Track alert creation metrics
+	metrics.AlertsCreatedTotal.WithLabelValues(event.EventManagerID, "child").Inc()
+	metrics.ActiveAlerts.WithLabelValues(event.EventManagerID, "child").Inc()
+
+	// Track end-to-end latency from event ingestion to alert creation (key SLO metric)
+	if !event.ReceivedAt.IsZero() {
+		metrics.AlertCreationLatency.Observe(time.Since(event.ReceivedAt).Seconds())
+	}
 
 	return nil
 }
@@ -341,6 +378,10 @@ func (s *Service) resolveChildAlert(
 	}
 
 	s.logger.Info("resolved child alert", "dedupKey", event.DedupKey)
+
+	// Track resolution metrics
+	metrics.AlertsResolvedTotal.WithLabelValues(event.EventManagerID, "child").Inc()
+	metrics.ActiveAlerts.WithLabelValues(event.EventManagerID, "child").Dec()
 
 	// Check if parent has pending resolve and all children are now resolved
 	if alertState.ParentDedupKey != "" {
@@ -467,6 +508,15 @@ func (s *Service) completeParentResolution(
 	}
 
 	s.logger.Info("resolved parent alert", "dedupKey", dedupKey)
+
+	// Track resolution metrics
+	metrics.AlertsResolvedTotal.WithLabelValues(alertState.EventManagerID, "parent").Inc()
+	metrics.ActiveAlerts.WithLabelValues(alertState.EventManagerID, "parent").Dec()
+
+	// Track alert group size (number of children)
+	if alert.ChildCount > 0 {
+		metrics.AlertGroupSize.Observe(float64(alert.ChildCount))
+	}
 
 	// Get event manager for notification
 	em, err := s.eventManagerRepo.GetByID(ctx, alertState.EventManagerID)
