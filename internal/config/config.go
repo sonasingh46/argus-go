@@ -11,13 +11,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// StorageMode represents the storage backend mode.
+type StorageMode string
+
+const (
+	// StorageModeMemory uses in-memory implementations for all storage.
+	StorageModeMemory StorageMode = "memory"
+	// StorageModeStorage uses real storage backends (Kafka, Redis, PostgreSQL).
+	StorageModeStorage StorageMode = "storage"
+)
+
+// IsValid returns true if the storage mode is valid.
+func (m StorageMode) IsValid() bool {
+	return m == StorageModeMemory || m == StorageModeStorage
+}
+
 // Config represents the complete application configuration.
 type Config struct {
+	Storage  StorageConfig  `yaml:"storage"`
 	Server   ServerConfig   `yaml:"server"`
 	Kafka    KafkaConfig    `yaml:"kafka"`
 	Redis    RedisConfig    `yaml:"redis"`
 	Postgres PostgresConfig `yaml:"postgres"`
 	Logger   LoggerConfig   `yaml:"logger"`
+}
+
+// StorageConfig holds the storage mode configuration.
+type StorageConfig struct {
+	Mode StorageMode `yaml:"mode"`
+}
+
+// UseMemory returns true if in-memory storage should be used.
+func (c *StorageConfig) UseMemory() bool {
+	return c.Mode == StorageModeMemory
+}
+
+// UseStorage returns true if real storage backends should be used.
+func (c *StorageConfig) UseStorage() bool {
+	return c.Mode == StorageModeStorage
 }
 
 // ServerConfig holds HTTP server settings.
@@ -53,8 +84,8 @@ type PostgresConfig struct {
 	Password     string `yaml:"password"`
 	Database     string `yaml:"database"`
 	SSLMode      string `yaml:"ssl_mode"`
-	MaxOpenConns int    `yaml:"max_open_conns"`
-	MaxIdleConns int    `yaml:"max_idle_conns"`
+	MaxOpenConns int32  `yaml:"max_open_conns"`
+	MaxIdleConns int32  `yaml:"max_idle_conns"`
 }
 
 // LoggerConfig holds logging settings.
@@ -87,6 +118,11 @@ func Load(path string) (*Config, error) {
 // applyDefaults sets sensible default values for configuration fields
 // that are not explicitly set in the config file.
 func applyDefaults(cfg *Config) {
+	// Storage defaults
+	if cfg.Storage.Mode == "" {
+		cfg.Storage.Mode = StorageModeMemory
+	}
+
 	// Server defaults
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "0.0.0.0"

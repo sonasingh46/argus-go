@@ -15,8 +15,13 @@ import (
 	"argus-go/internal/ingest"
 	"argus-go/internal/notification"
 	"argus-go/internal/processor"
-	"argus-go/internal/queue/memory"
-	storemem "argus-go/internal/store/memory"
+	"argus-go/internal/queue"
+	kafkaqueue "argus-go/internal/queue/kafka"
+	memoryqueue "argus-go/internal/queue/memory"
+	"argus-go/internal/store"
+	memorystor "argus-go/internal/store/memory"
+	postgresstor "argus-go/internal/store/postgres"
+	redisstor "argus-go/internal/store/redis"
 )
 
 func main() {
@@ -34,10 +39,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("configuration loaded", "path", *configPath)
+	logger.Info("configuration loaded",
+		"path", *configPath,
+		"storage_mode", cfg.Storage.Mode,
+	)
 
-	// Initialize dependencies
-	deps, cleanup := initDependencies(cfg, logger)
+	// Initialize dependencies based on storage mode
+	deps, cleanup, err := initDependencies(cfg, logger)
+	if err != nil {
+		logger.Error("failed to initialize dependencies", "error", err)
+		os.Exit(1)
+	}
 	defer cleanup()
 
 	// Create context that listens for shutdown signals
@@ -62,6 +74,7 @@ func main() {
 
 	logger.Info("ArgusGo started",
 		"address", cfg.Server.Address(),
+		"storage_mode", cfg.Storage.Mode,
 	)
 
 	// Wait for shutdown signal
@@ -89,26 +102,81 @@ type dependencies struct {
 	processor *processor.Service
 }
 
-// initDependencies creates and wires all service dependencies.
+// initDependencies creates and wires all service dependencies based on config.
 // Returns the dependencies and a cleanup function.
-func initDependencies(cfg *config.Config, logger *slog.Logger) (*dependencies, func()) {
-	// Initialize in-memory stores (for MVP)
-	// In production, these would be Redis/PostgreSQL implementations
-	stateStore := storemem.NewStateStore()
-	alertRepo := storemem.NewAlertRepository()
-	eventManagerRepo := storemem.NewEventManagerRepository()
-	groupingRuleRepo := storemem.NewGroupingRuleRepository()
+func initDependencies(cfg *config.Config, logger *slog.Logger) (*dependencies, func(), error) {
+	var (
+		stateStore       store.StateStore
+		alertRepo        store.AlertRepository
+		eventManagerRepo store.EventManagerRepository
+		groupingRuleRepo store.GroupingRuleRepository
+		producer         queue.Producer
+		consumer         queue.Consumer
+		cleanupFuncs     []func()
+	)
 
-	// Initialize in-memory queue (for MVP)
-	// In production, this would be Kafka
-	messageQueue := memory.NewQueue(10000) // 10k message buffer
+	if cfg.Storage.UseMemory() {
+		// Initialize in-memory implementations
+		logger.Info("initializing in-memory storage")
 
-	// Initialize notification service (stubbed for MVP)
+		memStateStore := memorystor.NewStateStore()
+		stateStore = memStateStore
+		cleanupFuncs = append(cleanupFuncs, func() { _ = memStateStore.Close() })
+
+		alertRepo = memorystor.NewAlertRepository()
+		eventManagerRepo = memorystor.NewEventManagerRepository()
+		groupingRuleRepo = memorystor.NewGroupingRuleRepository()
+
+		memQueue := memoryqueue.NewQueue(10000)
+		producer = memQueue
+		consumer = memQueue
+		cleanupFuncs = append(cleanupFuncs, func() { _ = memQueue.Close() })
+	} else {
+		// Initialize real storage implementations
+		logger.Info("initializing production storage (Kafka, Redis, PostgreSQL)")
+
+		// Initialize PostgreSQL
+		ctx := context.Background()
+		db, err := postgresstor.NewDB(ctx, &cfg.Postgres)
+		if err != nil {
+			return nil, nil, err
+		}
+		cleanupFuncs = append(cleanupFuncs, db.Close)
+
+		// Run migrations
+		if err := db.RunMigrations(ctx); err != nil {
+			return nil, nil, err
+		}
+		logger.Info("database migrations completed")
+
+		alertRepo = postgresstor.NewAlertRepository(db)
+		eventManagerRepo = postgresstor.NewEventManagerRepository(db)
+		groupingRuleRepo = postgresstor.NewGroupingRuleRepository(db)
+
+		// Initialize Redis
+		redisStore, err := redisstor.NewStateStore(&cfg.Redis)
+		if err != nil {
+			return nil, nil, err
+		}
+		stateStore = redisStore
+		cleanupFuncs = append(cleanupFuncs, func() { _ = redisStore.Close() })
+
+		// Initialize Kafka
+		kafkaProducer := kafkaqueue.NewProducer(&cfg.Kafka)
+		producer = kafkaProducer
+		cleanupFuncs = append(cleanupFuncs, func() { _ = kafkaProducer.Close() })
+
+		kafkaConsumer := kafkaqueue.NewConsumer(&cfg.Kafka, logger)
+		consumer = kafkaConsumer
+		cleanupFuncs = append(cleanupFuncs, func() { _ = kafkaConsumer.Close() })
+	}
+
+	// Initialize notification service (stubbed for now)
 	notifier := notification.NewStubNotifier(logger)
 
 	// Initialize ingest service
 	ingestService := ingest.NewService(
-		messageQueue,
+		producer,
 		eventManagerRepo,
 		groupingRuleRepo,
 		logger,
@@ -116,7 +184,7 @@ func initDependencies(cfg *config.Config, logger *slog.Logger) (*dependencies, f
 
 	// Initialize processor service
 	processorService := processor.NewService(
-		messageQueue,
+		consumer,
 		stateStore,
 		alertRepo,
 		eventManagerRepo,
@@ -141,21 +209,21 @@ func initDependencies(cfg *config.Config, logger *slog.Logger) (*dependencies, f
 		IngestHandler:       ingestHandler,
 	})
 
-	// Return dependencies and cleanup function
+	// Build cleanup function
 	cleanup := func() {
-		_ = messageQueue.Close()
-		_ = stateStore.Close()
+		for i := len(cleanupFuncs) - 1; i >= 0; i-- {
+			cleanupFuncs[i]()
+		}
 	}
 
 	return &dependencies{
 		server:    server,
 		processor: processorService,
-	}, cleanup
+	}, cleanup, nil
 }
 
 // initLogger creates and configures the application logger.
 func initLogger() *slog.Logger {
-	// Use JSON handler for structured logging
 	opts := &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}
