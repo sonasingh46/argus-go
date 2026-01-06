@@ -1,0 +1,38 @@
+# Build artifacts
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+integration/
+coverage.out
+coverage.html
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yaml
+
+# Documentation
+*.md
+docs/
+
+# Misc
+.env
+.env.*
+*.log
+tasks.md
