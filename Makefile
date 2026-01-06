@@ -1,5 +1,6 @@
 .PHONY: build run test test-unit test-integration clean fmt check-fmt lint security-scan help \
-	image image-run image-stop test-integration-container
+	image image-run image-stop test-integration-container \
+	dev-infra-up dev-infra-down dev-infra-logs dev-deploy dev-deploy-stop
 
 # Container image settings
 IMAGE_NAME ?= argus-go
@@ -91,28 +92,58 @@ test-integration-container: image
 	-docker stop $(CONTAINER_NAME)-test
 	-docker rm $(CONTAINER_NAME)-test
 
+# Start development infrastructure (Kafka, Redis, PostgreSQL)
+dev-infra-up:
+	docker-compose up -d
+	@echo "Waiting for services to be healthy..."
+	@sleep 5
+	@docker-compose ps
+
+# Stop development infrastructure
+dev-infra-down:
+	docker-compose down
+
+# View development infrastructure logs
+dev-infra-logs:
+	docker-compose logs -f
+
+# Deploy ArgusGo with storage backend (starts infra and runs app)
+dev-deploy: dev-infra-up build
+	@echo "Starting ArgusGo in storage mode..."
+	./bin/argus -config config/config-storage.yaml
+
+# Stop ArgusGo development deployment
+dev-deploy-stop: dev-infra-down
+
 # Help
 help:
 	@echo "ArgusGo Makefile commands:"
 	@echo ""
-	@echo "  build                     - Build the application binary"
-	@echo "  run                       - Run the application"
-	@echo "  test                      - Run all tests (unit + integration)"
-	@echo "  test-unit                 - Run unit tests only"
-	@echo "  test-integration          - Run integration tests only"
-	@echo "  test-integration-container- Run integration tests against container"
-	@echo "  it                        - Alias for test-integration"
-	@echo "  clean                     - Clean build artifacts"
-	@echo "  fmt                       - Format code"
-	@echo "  check-fmt                 - Check code formatting (CI)"
-	@echo "  lint                      - Run linter"
-	@echo "  security-scan             - Run security scan (gosec)"
-	@echo "  deps                      - Download and tidy dependencies"
-	@echo "  coverage                  - Generate test coverage report"
+	@echo "  build                      - Build the application binary"
+	@echo "  run                        - Run the application (memory mode)"
+	@echo "  test                       - Run all tests (unit + integration)"
+	@echo "  test-unit                  - Run unit tests only"
+	@echo "  test-integration           - Run integration tests only"
+	@echo "  test-integration-container - Run integration tests against container"
+	@echo "  it                         - Alias for test-integration"
+	@echo "  clean                      - Clean build artifacts"
+	@echo "  fmt                        - Format code"
+	@echo "  check-fmt                  - Check code formatting (CI)"
+	@echo "  lint                       - Run linter"
+	@echo "  security-scan              - Run security scan (gosec)"
+	@echo "  deps                       - Download and tidy dependencies"
+	@echo "  coverage                   - Generate test coverage report"
 	@echo ""
 	@echo "Container commands:"
-	@echo "  image                     - Build container image"
-	@echo "  image-run                 - Build and run container"
-	@echo "  image-stop                - Stop and remove container"
+	@echo "  image                      - Build container image"
+	@echo "  image-run                  - Build and run container"
+	@echo "  image-stop                 - Stop and remove container"
 	@echo ""
-	@echo "  help                      - Show this help message"
+	@echo "Development with Storage Backend:"
+	@echo "  dev-infra-up               - Start Kafka, Redis, PostgreSQL containers"
+	@echo "  dev-infra-down             - Stop infrastructure containers"
+	@echo "  dev-infra-logs             - View infrastructure container logs"
+	@echo "  dev-deploy                 - Start infra and run ArgusGo in storage mode"
+	@echo "  dev-deploy-stop            - Stop ArgusGo and infrastructure"
+	@echo ""
+	@echo "  help                       - Show this help message"
