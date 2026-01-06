@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"argus-go/internal/domain"
+	"argus-go/internal/metrics"
 )
 
 // NotificationPayload represents the data sent in webhook notifications.
@@ -57,6 +58,14 @@ func (n *StubNotifier) NotifyNewParent(ctx context.Context, alert *domain.Alert,
 		"summary", payload.Summary,
 		"severity", payload.Severity,
 	)
+
+	// Track notification metrics
+	metrics.NotificationsSentTotal.WithLabelValues(alert.EventManagerID, "success").Inc()
+
+	// Track notification latency (time from alert creation to notification dispatch)
+	if !alert.CreatedAt.IsZero() {
+		metrics.NotificationLatency.Observe(time.Since(alert.CreatedAt).Seconds())
+	}
 }
 
 // NotifyResolved logs a notification for a resolved parent alert.
@@ -70,6 +79,15 @@ func (n *StubNotifier) NotifyResolved(ctx context.Context, alert *domain.Alert, 
 		"summary", payload.Summary,
 		"childCount", payload.ChildCount,
 	)
+
+	// Track notification metrics
+	metrics.NotificationsSentTotal.WithLabelValues(alert.EventManagerID, "success").Inc()
+
+	// Track notification latency (time from resolution to notification dispatch)
+	// For resolved alerts, we use UpdatedAt as that's when the resolution happened
+	if alert.ResolvedAt != nil {
+		metrics.NotificationLatency.Observe(time.Since(*alert.ResolvedAt).Seconds())
+	}
 }
 
 // buildPayload creates a notification payload from an alert.

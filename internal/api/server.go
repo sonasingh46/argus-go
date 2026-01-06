@@ -6,9 +6,11 @@ import (
 	"log/slog"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"argus-go/internal/config"
 )
@@ -96,6 +98,9 @@ func (s *Server) registerMiddleware() {
 func (s *Server) registerRoutes() {
 	// Health check endpoint (outside versioned API)
 	s.app.Get("/healthz", s.healthCheck)
+
+	// Prometheus metrics endpoint
+	s.app.Get("/metrics", adaptor.HTTPHandler(promhttp.Handler()))
 
 	// API v1 routes
 	v1 := s.app.Group("/v1")

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"argus-go/internal/domain"
+	"argus-go/internal/metrics"
 	"argus-go/internal/queue"
 	"argus-go/internal/store"
 )
@@ -67,6 +68,11 @@ var (
 // 4. Compute the partition key for ordering
 // 5. Publish to the message queue
 func (s *Service) IngestEvent(ctx context.Context, event *domain.Event) error {
+	ingestStart := time.Now()
+
+	// Track event received
+	metrics.EventsReceivedTotal.WithLabelValues(event.EventManagerID, string(event.Action)).Inc()
+
 	// Step 1: Look up event manager
 	em, err := s.eventManagerRepo.GetByID(ctx, event.EventManagerID)
 	if err != nil {
@@ -123,10 +129,16 @@ func (s *Service) IngestEvent(ctx context.Context, event *domain.Event) error {
 		},
 	}
 
+	publishStart := time.Now()
 	if err := s.producer.Publish(ctx, msg); err != nil {
 		s.logger.Error("failed to publish event", "error", err, "dedupKey", event.DedupKey)
 		return ErrPublishFailed
 	}
+	metrics.QueuePublishLatency.Observe(time.Since(publishStart).Seconds())
+
+	// Track successful publish
+	metrics.EventsPublishedTotal.WithLabelValues(event.EventManagerID).Inc()
+	metrics.EventIngestLatency.Observe(time.Since(ingestStart).Seconds())
 
 	s.logger.Debug("event published to queue",
 		"dedupKey", event.DedupKey,
