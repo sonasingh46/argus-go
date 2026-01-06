@@ -72,10 +72,10 @@ func cleanupTestData(groupingRuleIDs, eventManagerIDs []string) {
 
 var _ = Describe("HTTP Integration Tests", Ordered, func() {
 	var (
-		groupingRuleID  string
-		eventManagerID  string
-		createdRuleIDs  []string
-		createdEMIDs    []string
+		groupingRuleID string
+		eventManagerID string
+		createdRuleIDs []string
+		createdEMIDs   []string
 	)
 
 	BeforeAll(func() {
@@ -276,7 +276,7 @@ var _ = Describe("HTTP Integration Tests", Ordered, func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
 			var result map[string]interface{}
-			Expect(parseResponse(result, &result)).To(Succeed())
+			Expect(parseResponse(resp, &result)).To(Succeed())
 		})
 
 		It("should get children of parent alert", func() {
