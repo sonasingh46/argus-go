@@ -214,20 +214,28 @@ var _ = Describe("HTTP Integration Tests", Ordered, func() {
 
 			Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
 
-			// Wait for event to be processed
-			time.Sleep(500 * time.Millisecond)
+			// Wait for event to be processed with retry
+			var data map[string]interface{}
+			Eventually(func() int {
+				alertResp, err := doRequest("GET", "/v1/alerts/http-test-alert-1", nil)
+				if err != nil {
+					return 0
+				}
+				defer alertResp.Body.Close()
 
-			// Verify alert was created
-			alertResp, err := doRequest("GET", "/v1/alerts/http-test-alert-1", nil)
-			Expect(err).NotTo(HaveOccurred())
-			defer alertResp.Body.Close()
+				if alertResp.StatusCode != http.StatusOK {
+					return alertResp.StatusCode
+				}
 
-			Expect(alertResp.StatusCode).To(Equal(http.StatusOK))
+				var result map[string]interface{}
+				if parseResponse(alertResp, &result) != nil {
+					return 0
+				}
 
-			var result map[string]interface{}
-			Expect(parseResponse(alertResp, &result)).To(Succeed())
+				data = result["data"].(map[string]interface{})
+				return http.StatusOK
+			}, 5*time.Second, 200*time.Millisecond).Should(Equal(http.StatusOK))
 
-			data := result["data"].(map[string]interface{})
 			Expect(data["summary"]).To(Equal("HTTP Test Alert"))
 			Expect(data["type"]).To(Equal("parent"))
 			Expect(data["status"]).To(Equal("active"))
@@ -250,21 +258,31 @@ var _ = Describe("HTTP Integration Tests", Ordered, func() {
 
 			Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
 
-			// Wait for processing
-			time.Sleep(500 * time.Millisecond)
+			// Wait for processing and retry to handle async processing
+			var data map[string]interface{}
+			Eventually(func() string {
+				alertResp, err := doRequest("GET", "/v1/alerts/http-test-alert-2", nil)
+				if err != nil {
+					return ""
+				}
+				defer alertResp.Body.Close()
 
-			// Verify child alert
-			alertResp, err := doRequest("GET", "/v1/alerts/http-test-alert-2", nil)
-			Expect(err).NotTo(HaveOccurred())
-			defer alertResp.Body.Close()
+				if alertResp.StatusCode != http.StatusOK {
+					return ""
+				}
 
-			Expect(alertResp.StatusCode).To(Equal(http.StatusOK))
+				var result map[string]interface{}
+				if parseResponse(alertResp, &result) != nil {
+					return ""
+				}
 
-			var result map[string]interface{}
-			Expect(parseResponse(alertResp, &result)).To(Succeed())
+				data = result["data"].(map[string]interface{})
+				if data["type"] == nil {
+					return ""
+				}
+				return data["type"].(string)
+			}, 5*time.Second, 200*time.Millisecond).Should(Equal("child"))
 
-			data := result["data"].(map[string]interface{})
-			Expect(data["type"]).To(Equal("child"))
 			Expect(data["parent_dedup_key"]).To(Equal("http-test-alert-1"))
 		})
 
@@ -309,21 +327,29 @@ var _ = Describe("HTTP Integration Tests", Ordered, func() {
 
 			Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
 
-			// Wait for processing
-			time.Sleep(500 * time.Millisecond)
+			// Wait for processing with retry
+			Eventually(func() string {
+				alertResp, err := doRequest("GET", "/v1/alerts/http-test-alert-2", nil)
+				if err != nil {
+					return ""
+				}
+				defer alertResp.Body.Close()
 
-			// Verify child is resolved
-			alertResp, err := doRequest("GET", "/v1/alerts/http-test-alert-2", nil)
-			Expect(err).NotTo(HaveOccurred())
-			defer alertResp.Body.Close()
+				if alertResp.StatusCode != http.StatusOK {
+					return ""
+				}
 
-			Expect(alertResp.StatusCode).To(Equal(http.StatusOK))
+				var result map[string]interface{}
+				if parseResponse(alertResp, &result) != nil {
+					return ""
+				}
 
-			var result map[string]interface{}
-			Expect(parseResponse(alertResp, &result)).To(Succeed())
-
-			data := result["data"].(map[string]interface{})
-			Expect(data["status"]).To(Equal("resolved"))
+				data := result["data"].(map[string]interface{})
+				if data["status"] == nil {
+					return ""
+				}
+				return data["status"].(string)
+			}, 5*time.Second, 200*time.Millisecond).Should(Equal("resolved"))
 		})
 	})
 })
